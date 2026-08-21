@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.venv/
+venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# PyQt / Qt build artifacts
+*.ui.py.bak
+ui_*.py
+
+# Project runtime artifacts
+*.log
+reports/
+*.session
+cookies.json
+
+# OS
+Thumbs.db
+.DS_Store
