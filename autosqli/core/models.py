@@ -76,6 +76,11 @@ WAF_BLOCK_PATTERNS = [
 
 WAF_BLOCK_STATUS = {400, 403, 406, 418, 429, 501}
 
+# 常见 CTF flag 格式：flag{...} / ctfshow{...} / CTF2{...} / DASCTF{...} 等
+FLAG_PATTERN = re.compile(
+    r"(?:flag|ctfshow|CTF2|DASCTF|SYC|NSS|BUU|ctf|hgame|moectf|flag_is_here)"
+    r"\{[\x21-\x7e]{4,120}\}", re.I)
+
 
 @dataclass
 class ResponseInfo:
@@ -109,6 +114,10 @@ class ResponseInfo:
 
     def contains_all(self, *needles: str) -> bool:
         return all(n in self.body for n in needles)
+
+    def find_flags(self) -> list:
+        """提取响应中符合 CTF flag 格式的字符串（万能密码题登录页直出 flag）。"""
+        return [m.group(0) for m in FLAG_PATTERN.finditer(self.body)]
 
 
 def similarity(a: ResponseInfo, b: ResponseInfo) -> float:

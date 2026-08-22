@@ -32,6 +32,7 @@ class HttpSession:
         self._last_request_time = 0.0
         self._rate_lock = threading.Lock()
         self.request_count = 0
+        self.found_flags: list = []          # 响应中捕获的 flag（EasySQL 类题型）
         self._stop = threading.Event()
 
     # ------------------------------------------------------------------ session
@@ -188,11 +189,17 @@ class HttpSession:
         elapsed = (time.perf_counter() - t0) * 1000
         self.request_count += 1
         self._sync_cookies(s)
-        self.log("REQ", f"{self.spec.method} {final_url} -> {r.status_code} "
-                        f"({len(r.text)}B, {elapsed:.0f}ms) {extra_note}")
-        return ResponseInfo(status_code=r.status_code, body=r.text,
+        info = ResponseInfo(status_code=r.status_code, body=r.text,
                             elapsed_ms=elapsed, url=final_url,
                             headers=dict(r.headers))
+        flags = info.find_flags()
+        for f in flags:
+            if f not in self.found_flags:
+                self.found_flags.append(f)
+                self.log("FLAG", f"🎉 响应中发现 flag: {f}")
+        self.log("REQ", f"{self.spec.method} {final_url} -> {r.status_code} "
+                        f"({len(r.text)}B, {elapsed:.0f}ms) {extra_note}")
+        return info
 
     def multi(self, values: list, workers: int = 4) -> list:
         """并发发送一批 payload（顺序与 values 对应）。"""

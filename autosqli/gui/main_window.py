@@ -136,6 +136,11 @@ class MainWindow(QMainWindow):
         self.inj_label.setStyleSheet("font-weight:bold; padding:4px;")
         root.addWidget(self.inj_label)
 
+        self.flag_label = QLabel("")
+        self.flag_label.setStyleSheet("color:#c62828; font-weight:bold; padding:2px;")
+        self.flag_label.setWordWrap(True)
+        root.addWidget(self.flag_label)
+
         self.fp_label = QLabel("")
         self.fp_label.setWordWrap(True)
         root.addWidget(self.fp_label)
@@ -279,6 +284,8 @@ class MainWindow(QMainWindow):
     def on_analysis_done(self, report):
         self.report = report
         self.engine = getattr(report, "engine", None)
+        flags = getattr(self.engine.session, "found_flags", []) if self.engine else []
+        self.flag_label.setText("🎉 " + " / ".join(flags) if flags else "")
         inj = report.injection
         if inj is None:
             self.inj_label.setText("⚠ 未发现注入点")

@@ -67,6 +67,9 @@ class Engine:
                                  category=t.meta.category, feasible=ok, reason=reason,
                                  recommended=ok and rec_flag.get(t.meta.key, False))
             report.techniques.append(info)
+
+        if s.found_flags:
+            report.notes.insert(0, "🎉 响应中直接捕获到 flag: " + " / ".join(s.found_flags))
         return report
 
     # ------------------------------------------------------------------ solve
