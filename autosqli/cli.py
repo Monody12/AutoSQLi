@@ -57,6 +57,10 @@ def build_spec(args) -> TargetSpec:
 
 
 def main(argv=None):
+    # Windows 控制台默认 GBK：★✓✗ 等字符会 UnicodeEncodeError
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="autosqli", description="CTF SQL 注入自动化分析（WAF 感知）")
     ap.add_argument("-u", "--url", required=True, help="目标 URL")
     ap.add_argument("-p", "--param", default="", help="被测参数名（默认自动选择第一个）")

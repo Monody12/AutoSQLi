@@ -115,7 +115,17 @@ AutoSQLi/
 
 ## 快速开始
 
-### 一键启动 / 停止（推荐）
+### 下载即用（推荐，无需 Python 环境）
+
+从 [Releases](https://github.com/Monody12/AutoSQLi/releases) 下载 **AutoSQLi.exe**（约 40MB，Windows 单文件）：
+
+- **双击 `AutoSQLi.exe`** → 直接打开图形界面；
+- **命令行模式**：`AutoSQLi.exe -u "http://题目地址/" --dump`（参数与下文 CLI 手册一致）；
+- 自带全部字典与依赖，解压即用；慢靶场建议加 `--workers 3`。
+
+Linux 用户使用源码方式（见下），Release 暂只提供 Windows 构建。
+
+### 一键启动 / 停止（源码方式）
 
 | 平台 | 启动 | 停止 |
 | --- | --- | --- |
