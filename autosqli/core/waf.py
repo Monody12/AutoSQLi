@@ -23,9 +23,11 @@ from .models import (BYPASS_SUGGESTIONS, InjectionPoint, ResponseInfo, WafItem,
                      WafReport, similarity)
 from .session import HttpSession
 
-# PyInstaller frozen 模式下资源解压在 _MEIPASS
-_FROZEN_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-DICT_DIR = _FROZEN_BASE / "autosqli" / "dictionaries"
+# PyInstaller frozen 模式下资源解压在 _MEIPASS/autosqli/dictionaries
+if hasattr(sys, "_MEIPASS"):
+    DICT_DIR = Path(sys._MEIPASS) / "autosqli" / "dictionaries"
+else:
+    DICT_DIR = Path(__file__).resolve().parent.parent / "dictionaries"
 
 
 class WafScanner:

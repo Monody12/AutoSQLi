@@ -35,6 +35,10 @@ class _PageParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag == "a":
+            href = a.get("href")
+            if href:
+                self.links.append(href)
         if tag == "form":
             self._form = {
                 "method": (a.get("method") or "GET").upper(),

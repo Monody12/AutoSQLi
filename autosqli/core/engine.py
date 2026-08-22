@@ -5,6 +5,7 @@ from typing import Optional
 
 from .builder import PayloadBuilder
 from .crawler import discover, injectable_param_names
+from .dbms import get_dialect
 from .detector import Detector
 from .fingerprint import Fingerprinter
 from .models import (AnalysisReport, InjectionPoint, TargetSpec, TechniqueInfo,
@@ -97,10 +98,11 @@ class Engine:
             s.log("WARN", "[发现] 页面上未找到任何表单或带参链接")
             return False
 
+        hits = []
         for cand in candidates:
             for pname in injectable_param_names(cand):
                 if s.stopped:
-                    return False
+                    break
                 s.log("INFO", f"[试探] {cand.method} {cand.url} 参数 {pname!r}")
                 spec.url = cand.url
                 spec.method = cand.method
@@ -117,13 +119,33 @@ class Engine:
                 if inj is not None:
                     s.log("INFO", f"[发现] ✓ 注入点确认: {cand.method} {cand.url} "
                                   f"参数 {pname!r}（闭合 {inj.closure!r}）")
-                    report.notes.append(
-                        f"自动发现注入点: {cand.source} → {cand.method} "
-                        f"{cand.url} 参数 {pname}")
-                    return True
-                s.log("INFO", f"[试探] ✗ 参数 {pname!r} 无注入")
-        s.log("WARN", "[发现] 所有候选参数均无注入点")
-        return False
+                    hits.append((cand, pname, inj))
+                else:
+                    s.log("INFO", f"[试探] ✗ 参数 {pname!r} 无注入")
+        if not hits:
+            s.log("WARN", "[发现] 所有候选参数均无注入点")
+            return False
+        if len(hits) > 1:
+            names = "；".join(f"{c.method} {c.url} 参数 {p}" for c, p, _ in hits)
+            report.notes.append(f"共发现 {len(hits)} 个注入点: {names}")
+        # 通道质量排序：有 union 回显位的最优（快几个数量级），布尔点次之
+        hits.sort(key=lambda h: -len(h[2].echo_positions or []))
+        cand, pname, inj0 = hits[0]
+        if len(hits) > 1:
+            s.log("INFO", f"[发现] 共 {len(hits)} 个注入点，选用有回显位的: "
+                          f"{cand.method} {cand.url} 参数 {pname!r}")
+        spec.url, spec.param = cand.url, pname
+        spec.method = cand.method
+        if cand.method == "POST":
+            spec.params = {}
+            spec.body_params = dict(cand.fields)
+        else:
+            spec.params = dict(cand.fields)
+            spec.body_params = {}
+        spec.base_value = cand.fields.get(pname) or "1"
+        report.notes.append(f"自动发现注入点: {cand.source} → {cand.method} "
+                            f"{cand.url} 参数 {pname}")
+        return True
 
     # ------------------------------------------------------------------ solve
     def build_oracle(self, report: AnalysisReport, technique_key: str,
@@ -144,6 +166,9 @@ class Engine:
         oracle = self.build_oracle(report, technique_key, workers=workers)
         if oracle is None:
             raise OracleError(f"无法构造 {technique_key} 通道（方法不可用）")
+        dialect = get_dialect(report.fingerprint.dbms)
+        oracle.dialect = dialect
         builder = PayloadBuilder(report.injection, report.waf)
-        pipe = ExtractionPipeline(oracle, builder, self.session, report.waf)
+        pipe = ExtractionPipeline(oracle, builder, self.session, report.waf,
+                                  dialect=dialect)
         return pipe.auto_dump(max_rows=max_rows, dump_all_dbs=dump_all_dbs)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .base import Technique, TechniqueMeta, register
+from ..core.dbms import get_dialect
 from ..core.models import AnalysisReport
 from ..core.oracles import (BaseOracle, BoolOracle, ErrorOracle, OracleError,
                             StackedOracle, TimeOracle, UnionOracle)
@@ -40,6 +41,9 @@ class ErrorBased(Technique):
 
     def feasible(self, report: AnalysisReport):
         fp, waf = report.fingerprint, report.waf
+        d = get_dialect(fp.dbms)
+        if not d.supports_error_channel:
+            return False, f"{d.name} 不支持 XPATH 报错通道"
         if not fp.error_visible:
             return False, "页面无 SQL 报错回显"
         if waf.is_filtered("updatexml", "extractvalue"):
@@ -76,6 +80,9 @@ class TimeBlind(Technique):
 
     def feasible(self, report: AnalysisReport):
         fp, waf = report.fingerprint, report.waf
+        d = get_dialect(fp.dbms)
+        if not d.supports_time_channel:
+            return False, f"{d.name} 无 sleep() 函数（时间盲注需重计算法）"
         if not fp.time_oracle:
             return False, "sleep 延时不可用或未观察到时间差异"
         if waf.is_filtered("ascii", "ord", "substr", "mid"):
@@ -102,6 +109,9 @@ class Stacked(Technique):
 
     def feasible(self, report: AnalysisReport):
         fp, waf = report.fingerprint, report.waf
+        d = get_dialect(fp.dbms)
+        if not d.supports_stacked:
+            return False, f"{d.name} 不支持此类堆叠通道"
         if waf.is_filtered(";"):
             return False, "分号被过滤"
         if not fp.stacked:

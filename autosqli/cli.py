@@ -79,6 +79,7 @@ def main(argv=None):
                     help="盲注并发线程数（网络好可调 12-16）")
     ap.add_argument("--dump", action="store_true", help="分析后直接全自动脱库")
     ap.add_argument("--report", default="", help="分析报告输出 JSON 路径")
+    ap.add_argument("--solution", default="", help="解题方法复盘输出 Markdown 路径")
     ap.add_argument("--quiet", action="store_true", help="不打印请求日志")
     args = ap.parse_args(argv)
 
@@ -134,6 +135,15 @@ def main(argv=None):
         d = result.to_dict()
         print(json.dumps(d, ensure_ascii=False, indent=2)[:8000])
         print(f"\n[+] 请求数: {engine.session.request_count}")
+
+        from .core.solution import build_solution_report
+        md = build_solution_report(report, result)
+        print("\n" + "=" * 22 + " 解题方法复盘 " + "=" * 22)
+        print(md)
+        if args.solution:
+            with open(args.solution, "w", encoding="utf-8") as f:
+                f.write(md)
+            print(f"\n[*] 复盘已写入 {args.solution}")
     return 0
 
 

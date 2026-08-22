@@ -33,7 +33,14 @@ class HttpSession:
         self._rate_lock = threading.Lock()
         self.request_count = 0
         self.found_flags: list = []          # 响应中捕获的 flag（EasySQL 类题型）
+        self.solution_steps: list = []       # [(阶段, payload, 说明)] 解题方法复盘
         self._stop = threading.Event()
+
+    def record_step(self, title: str, payload: str, note: str = ""):
+        """登记解题关键步骤（供复盘报告：知其然并知其所以然）。相同步骤去重。"""
+        item = (title, payload, note)
+        if item not in self.solution_steps and                 (title, payload) not in [(t, p) for t, p, _ in self.solution_steps]:
+            self.solution_steps.append(item)
 
     # ------------------------------------------------------------------ session
     def _new_session(self) -> requests.Session:

