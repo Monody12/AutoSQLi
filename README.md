@@ -115,6 +115,19 @@ AutoSQLi/
 
 ## 快速开始
 
+### 一键启动 / 停止（推荐）
+
+| 平台 | 启动 | 停止 |
+| --- | --- | --- |
+| Windows | 双击 `start.bat` | 双击 `stop.bat`（或直接关 GUI 窗口） |
+| Linux | `./start.sh` | `./stop.sh` |
+
+- 首次运行自动创建虚拟环境并安装依赖，无需手工操作；
+- CLI 快捷入口：`autosqli.bat -u "URL" --dump`（Linux 为 `./autosqli.sh ...`），参数见下文 CLI 手册；
+- `stop` 只结束 `python -m autosqli` 进程，不影响系统里其他 Python。
+
+### 手动方式
+
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate    Linux: source .venv/bin/activate
