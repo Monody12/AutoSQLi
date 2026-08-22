@@ -21,7 +21,7 @@ from .models import ResponseInfo, TargetSpec
 class HttpSession:
     """面向"单参数注入"的请求会话。"""
 
-    def __init__(self, spec: TargetSpec, timeout: float = 15.0,
+    def __init__(self, spec: TargetSpec, timeout: float = 25.0,
                  logger: Optional[Callable[[str, str], None]] = None):
         self.spec = spec
         self.timeout = timeout
@@ -173,19 +173,26 @@ class HttpSession:
                                     elapsed_ms=0)
         self._rate_limit()
         t0 = time.perf_counter()
-        try:
-            if self.spec.method.upper() == "POST":
-                body = {k: (value if k == param else str(v))
-                        for k, v in self.spec.body_params.items()}
-                r = s.post(self.spec.url, data=body, timeout=self.timeout)
-                final_url = self.spec.url
-            else:
-                final_url = self.build_url(value, param)
-                r = s.get(final_url, timeout=self.timeout)
-        except requests.RequestException as e:
-            self.log("ERROR", f"请求异常: {e}")
-            return ResponseInfo(status_code=-1, body=f"__REQUEST_ERROR__:{e}",
-                                elapsed_ms=(time.perf_counter() - t0) * 1000)
+        final_url = ""
+        for attempt in (1, 2):        # 慢环境网络抖动重试一次
+            try:
+                if self.spec.method.upper() == "POST":
+                    body = {k: (value if k == param else str(v))
+                            for k, v in self.spec.body_params.items()}
+                    r = s.post(self.spec.url, data=body, timeout=self.timeout)
+                    final_url = self.spec.url
+                else:
+                    final_url = self.build_url(value, param)
+                    r = s.get(final_url, timeout=self.timeout)
+                break
+            except requests.RequestException as e:
+                if attempt == 1:
+                    self.log("WARN", f"请求超时/异常，1.5s 后重试: {str(e)[:60]}")
+                    time.sleep(1.5)
+                    continue
+                self.log("ERROR", f"请求重试仍失败: {e}")
+                return ResponseInfo(status_code=-1, body=f"__REQUEST_ERROR__:{e}",
+                                    elapsed_ms=(time.perf_counter() - t0) * 1000)
         elapsed = (time.perf_counter() - t0) * 1000
         self.request_count += 1
         self._sync_cookies(s)
