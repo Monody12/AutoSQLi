@@ -57,7 +57,7 @@ class WafScanner:
         return self.inj.base_value + self.inj.closure
 
     def _tail(self) -> str:
-        return self.inj.comment if self.inj.comment != "quote-close" else ""
+        return self.inj.comment if self.inj.comment not in ("quote-close", "none") else ""
 
     def _classify(self, r: ResponseInfo) -> str:
         if r.status_code < 0:
@@ -152,10 +152,13 @@ class WafScanner:
     # ------------------------------------------------------------------ special probes
     def _probe_space(self, report: WafReport, token: str, pre: str, tail: str):
         """空格探针（自参照法，无条件执行）：
-        以无空格恒真 1'or(1=1)# 的响应为成功参照 R_true，
-        含空格恒真 1' or 1# 与之相似 = 通过；否则被滤。
+        以无空格恒真的响应为成功参照 R_true（xor 形态用 1^(1=1)——
+        数字型 1or(1=1) 会粘连语法错），含空格恒真与之相似 = 通过；否则被滤。
         空格被滤时继续探测空白替代 %09 / %0a。"""
-        r_true = self.s.request_value(f"{pre}or(1=1){tail}")
+        if getattr(self.inj, "form", "classic") == "xor":
+            r_true = self.s.request_value(f"{pre}^(1=1){tail}")
+        else:
+            r_true = self.s.request_value(f"{pre}or(1=1){tail}")
         if r_true.status_code > 0 and not r_true.has_waf_block() \
                 and not r_true.has_sql_error():
             r = self.s.request_value(f"{pre} or 1{tail}")

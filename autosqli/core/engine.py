@@ -126,17 +126,22 @@ class Engine:
         return False
 
     # ------------------------------------------------------------------ solve
-    def build_oracle(self, report: AnalysisReport, technique_key: str) -> Optional[BaseOracle]:
+    def build_oracle(self, report: AnalysisReport, technique_key: str,
+                     workers: int = 6) -> Optional[BaseOracle]:
         for t in all_techniques():
             if t.meta.key == technique_key:
                 builder = PayloadBuilder(report.injection, report.waf)
                 report.builder = builder
-                return t.make_oracle(report)
+                oracle = t.make_oracle(report)
+                if oracle is not None and hasattr(oracle, "workers"):
+                    oracle.workers = workers
+                return oracle
         return None
 
     def solve(self, report: AnalysisReport, technique_key: str,
-              max_rows: int = 20, dump_all_dbs: bool = False) -> DumpResult:
-        oracle = self.build_oracle(report, technique_key)
+              max_rows: int = 20, dump_all_dbs: bool = False,
+              workers: int = 6) -> DumpResult:
+        oracle = self.build_oracle(report, technique_key, workers=workers)
         if oracle is None:
             raise OracleError(f"无法构造 {technique_key} 通道（方法不可用）")
         builder = PayloadBuilder(report.injection, report.waf)

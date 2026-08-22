@@ -71,6 +71,8 @@ def main(argv=None):
     ap.add_argument("--no-waf", action="store_true", help="跳过 WAF 扫描（快速模式）")
     ap.add_argument("--technique", default="union", help="解题方法 key（默认 union）")
     ap.add_argument("--max-rows", type=int, default=20)
+    ap.add_argument("--workers", type=int, default=6,
+                    help="盲注并发线程数（网络好可调 12-16）")
     ap.add_argument("--dump", action="store_true", help="分析后直接全自动脱库")
     ap.add_argument("--report", default="", help="分析报告输出 JSON 路径")
     ap.add_argument("--quiet", action="store_true", help="不打印请求日志")
@@ -119,7 +121,8 @@ def main(argv=None):
             key = rec[0].key if rec else (report.techniques[0].key if report.techniques else "union")
         print(f"\n========== 开始脱库（通道: {key}） ==========")
         try:
-            result = engine.solve(report, key, max_rows=args.max_rows)
+            result = engine.solve(report, key, max_rows=args.max_rows,
+                                  workers=args.workers)
         except OracleError as e:
             print(f"[-] 通道构造失败: {e}")
             return 2

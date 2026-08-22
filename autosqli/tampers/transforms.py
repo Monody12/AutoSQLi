@@ -197,7 +197,7 @@ TAMPERS = {
 
 def apply_form(core: str, form: str) -> str:
     """按实测命中的 payload 形态变换核心 SQL。"""
-    if form == "paren":
+    if form in ("paren", "xor"):
         return parenthesize(core)
     if form == "inline":
         return space2comment(core)
@@ -211,7 +211,7 @@ def apply_form(core: str, form: str) -> str:
 def form_sep(form: str) -> str:
     """数字型（无闭合引号）时 pre 与关键字核心之间的形态分隔符。"""
     return {"classic": " ", "inline": "/**/", "tab": "\t", "paren": "\t",
-            "orinject": " "}.get(form, " ")
+            "orinject": " ", "xor": ""}.get(form, " ")
 
 
 # ---------------------------------------------------------------------------
