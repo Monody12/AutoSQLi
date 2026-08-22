@@ -204,3 +204,8 @@ def apply_form(core: str, form: str) -> str:
     if form == "tab":
         return tabify(core)
     return core
+
+
+def form_sep(form: str) -> str:
+    """数字型（无闭合引号）时 pre 与关键字核心之间的形态分隔符。"""
+    return {"classic": " ", "inline": "/**/", "tab": "\t", "paren": "\t"}.get(form, " ")

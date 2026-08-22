@@ -190,12 +190,22 @@ class WafScanner:
         cls = self._classify(r)
         if cls == "error":
             self._record(report, token, "符号", "error")
+            return
+        # 自参照法：无引号恒真 vs 含引号恒真（'a'='a'）页面比对
+        r_ref = self.s.request_value(f"{pre}/**/and/**/1=1{tail}")
+        r_quote = self.s.request_value(f"{pre}/**/and/**/'a'='a'{tail}")
+        if r_ref.status_code > 0 and similarity(r_ref, r_quote) >= 0.98 \
+                and r_ref.status_code == r_quote.status_code:
+            self._record(report, token, "符号", "error",
+                         note="（含引号恒真与无引号恒真一致，引号可用）", trust=True)
+        elif r_ref.status_code > 0 and similarity(r_ref, r_quote) < 0.95:
+            self._record(report, token, "符号", "base",
+                         note="（含引号恒真失败而无引号恒真成功，引号被过滤/剥离）",
+                         trust=True)
         elif not self.err_valid:
-            # 无报错回显：无法从响应区分「引号逃逸成功但语句恒假」与「被转义」
             self._record(report, token, "符号", None,
                          note="（无报错回显，请以闭合探测结果为准）")
         else:
-            # 引号未引发报错 → 被转义/过滤（DVWA medium/high 即此情况）
             self._record(report, token, "符号", "base",
                          note="（引号被转义或过滤，字符串逃逸失败）")
 

@@ -133,6 +133,8 @@ class HttpSession:
         for k, v in self.spec.params.items():
             vv = value if k == param else str(v)
             parts.append(f"{urllib.parse.quote(k, safe='')}={self.encode_value(vv)}")
+        if param and param not in self.spec.params:
+            parts.append(f"{urllib.parse.quote(param, safe='')}={self.encode_value(value)}")
         base = self.spec.url
         return base + ("&" if "?" in base else "?") + "&".join(parts) if parts else base
 
