@@ -1,0 +1,22 @@
+# 符号类探测字典；probe 方式由代码按符号语义决定
+symbols:
+  - {token: space,  literal: " "}
+  - {token: "'",    literal: "'"}
+  - {token: '"',    literal: '"'}
+  - {token: ",",    literal: ","}
+  - {token: "=",    literal: "="}
+  - {token: "<",    literal: "<"}
+  - {token: ">",    literal: ">"}
+  - {token: "#",    literal: "#"}
+  - {token: "--",   literal: "--"}
+  - {token: "/*",   literal: "/*"}
+  - {token: "*/",   literal: "*/"}
+  - {token: ";",    literal: ";"}
+  - {token: "(",    literal: "("}
+  - {token: ")",    literal: ")"}
+  - {token: "+",    literal: "+"}
+  - {token: "||",   literal: "||"}
+  - {token: "&&",   literal: "&&"}
+  - {token: "^",    literal: "^"}
+  - {token: "`",    literal: "`"}
+  - {token: "%",    literal: "%"}

@@ -1,0 +1,60 @@
+# AutoSQLi WAF 探测字典
+# category: keyword=关键字 function=函数 symbol=符号
+# probe_ctx: raw=直接拼入闭合后 payload（语法错误=通过） semantic=需专用探针
+
+keywords:
+  - {token: and,        category: keyword, probe: raw}
+  - {token: or,         category: keyword, probe: raw}
+  - {token: not,        category: keyword, probe: raw}
+  - {token: union,      category: keyword, probe: raw}
+  - {token: select,     category: keyword, probe: raw}
+  - {token: from,       category: keyword, probe: raw}
+  - {token: where,      category: keyword, probe: raw}
+  - {token: order,      category: keyword, probe: raw}
+  - {token: limit,      category: keyword, probe: raw}
+  - {token: insert,     category: keyword, probe: raw}
+  - {token: update,     category: keyword, probe: raw}
+  - {token: delete,     category: keyword, probe: raw}
+  - {token: drop,       category: keyword, probe: raw}
+  - {token: rename,     category: keyword, probe: raw}
+  - {token: alter,      category: keyword, probe: raw}
+  - {token: show,       category: keyword, probe: raw}
+  - {token: table,      category: keyword, probe: raw}
+  - {token: values,     category: keyword, probe: raw}
+  - {token: into,       category: keyword, probe: raw}
+  - {token: handler,    category: keyword, probe: raw}
+  - {token: prepare,    category: keyword, probe: raw}
+  - {token: execute,    category: keyword, probe: raw}
+  - {token: information_schema, category: keyword, probe: raw}
+  - {token: mysql,      category: keyword, probe: raw}
+  - {token: performance_schema, category: keyword, probe: raw}
+  - {token: sys,        category: keyword, probe: raw}
+
+functions:
+  - {token: database,   category: function, probe: raw}
+  - {token: version,    category: function, probe: raw}
+  - {token: user,       category: function, probe: raw}
+  - {token: concat,     category: function, probe: raw}
+  - {token: group_concat, category: function, probe: raw}
+  - {token: substr,     category: function, probe: raw}
+  - {token: substring,  category: function, probe: raw}
+  - {token: mid,        category: function, probe: raw}
+  - {token: left,       category: function, probe: raw}
+  - {token: right,      category: function, probe: raw}
+  - {token: ascii,      category: function, probe: raw}
+  - {token: ord,        category: function, probe: raw}
+  - {token: hex,        category: function, probe: raw}
+  - {token: unhex,      category: function, probe: raw}
+  - {token: if,         category: function, probe: raw}
+  - {token: case,       category: function, probe: raw}
+  - {token: sleep,      category: function, probe: raw}
+  - {token: benchmark,  category: function, probe: raw}
+  - {token: updatexml,  category: function, probe: raw}
+  - {token: extractvalue, category: function, probe: raw}
+  - {token: floor,      category: function, probe: raw}
+  - {token: rand,       category: function, probe: raw}
+  - {token: exp,        category: function, probe: raw}
+  - {token: load_file,  category: function, probe: raw}
+  - {token: outfile,    category: function, raw: true, probe: raw}
+  - {token: regexp,     category: function, probe: raw}
+  - {token: like,       category: function, probe: raw}

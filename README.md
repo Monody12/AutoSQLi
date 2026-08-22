@@ -108,10 +108,27 @@ AutoSQLi/
 
 ## 开发路线图
 
-- [ ] **Phase 1** — core 框架：会话管理、注入点发现、WAF 过滤清单（CLI 验证，靶场 DVWA Low）
-- [ ] **Phase 2** — 解题引擎：联合查询 / 报错 / 布尔盲注 / 时间盲注 + WAF 感知构造器（DVWA Medium/High）
-- [ ] **Phase 3** — PyQt6 GUI：完整流程可视化、数据树、报告导出
-- [ ] **Phase 4** — 高级方法：堆叠（RENAME/HANDLER/PREPARE）、宽字节、无列名、二次注入引导、约束攻击检测；MySQL 8.0 适配；打包发布（Windows/Linux）
+- [x] **Phase 1** — core 框架：会话管理、注入点发现、WAF 过滤清单（DVWA Low 验证通过）
+- [x] **Phase 2** — 解题引擎：联合查询 / 报错 / 布尔盲注 / 时间盲注 + WAF 感知构造器（DVWA Low/Medium/High 三级验证：四通道脱库、数字型、两步提交、空报错页自适应）
+- [x] **Phase 3** — PyQt6 GUI：完整流程可视化、数据树、报告导出
+- [ ] **Phase 4** — 高级方法：堆叠（RENAME/HANDLER/PREPARE）交互式执行、宽字节通道化、无列名注入自动化、二次注入引导；MySQL 8.0 适配（TABLE/VALUES ROW/bin_to_uuid）；打包发布（Windows/Linux）
+
+## 快速开始
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate    Linux: source .venv/bin/activate
+pip install -r requirements.txt
+
+# 图形界面
+python -m autosqli.gui
+
+# 命令行（本地 DVWA 一键分析 + 全自动脱库）
+python -m autosqli.cli -u "http://localhost/vulnerabilities/sqli/?id=1&Submit=Submit" \
+    --dvwa admin:password --dump
+# 其他等级：--security medium（POST 数字型）/ --security high（自动配置两步提交）
+# 指定通道：--technique union|error|bool_blind|time_blind；跳过 WAF 扫描：--no-waf
+```
 
 ## 测试环境
 
