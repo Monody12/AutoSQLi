@@ -4,7 +4,7 @@ from __future__ import annotations
 from .base import Technique, TechniqueMeta, register
 from ..core.models import AnalysisReport
 from ..core.oracles import (BaseOracle, BoolOracle, ErrorOracle, OracleError,
-                            TimeOracle, UnionOracle)
+                            StackedOracle, TimeOracle, UnionOracle)
 
 
 def _mk(report: AnalysisReport, cls):
@@ -98,7 +98,7 @@ class UniversalPassword(Technique):
 @register
 class Stacked(Technique):
     meta = TechniqueMeta("stacked", "堆叠注入", "特殊",
-                         "分号执行任意语句：show tables / handler / prepare+concat / rename 换表")
+                         "分号执行任意语句：PREPARE+hex 通用取数 / show tables / handler / rename 换表")
 
     def feasible(self, report: AnalysisReport):
         fp, waf = report.fingerprint, report.waf
@@ -106,7 +106,12 @@ class Stacked(Technique):
             return False, "分号被过滤"
         if not fp.stacked:
             return False, "后端疑似单语句执行（mysqli_query），堆叠不可用"
-        return True, "多语句执行可用"
+        if waf.is_filtered("prepare", "execute"):
+            return True, "堆叠可用（prepare 被滤，可走 show/handler 读取）"
+        return True, "多语句执行可用：PREPARE+十六进制可绕过一切关键字过滤"
+
+    def make_oracle(self, report):
+        return _mk(report, StackedOracle)
 
 
 @register

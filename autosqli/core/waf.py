@@ -87,7 +87,12 @@ class WafScanner:
                 # 无报错区分度的环境（登录框吞错等）：语义不可见 ≠ 被剥离
                 filtered, ev = None, "无报错回显，无法区分「语义不可见」与「被剥离」"
         else:
-            filtered, ev = None, "响应特征不明确"
+            # other：既非基线也非 SQL 报错。err_valid 环境下 kw 探针应报错而未报错
+            # → 强烈暗示被 WAF 拦截（如强网杯 preg_match 返回默认页）
+            if self.err_valid:
+                filtered, ev = True, "疑似 WAF 拦截（应触发 SQL 报错而未报错，响应异于基线）"
+            else:
+                filtered, ev = None, "响应特征不明确"
         item = WafItem(token=token, category=category, filtered=filtered,
                        evidence=ev, suggestion=BYPASS_SUGGESTIONS.get(token, ""))
         report.add(item)
@@ -215,7 +220,7 @@ class WafScanner:
         if cls == "error":
             self._record(report, token, "符号", "error")
         elif self.inj.closure.startswith("'"):
-            # 单引号上下文中 " 本就是普通数据，不构成逃逸要素，标记为不适用
+            # 单引号上下文中 " 本就是普通数据（合法不报错），无区分度
             self._record(report, token, "符号", None,
                          note="（当前为单引号闭合，双引号作为数据处理）")
         else:
@@ -262,11 +267,14 @@ class WafScanner:
             self._record(report, token, "符号", "other")
 
     def _probe_semicolon(self, report: WafReport, token: str, pre: str, tail: str):
-        """1';(select 1)# → 多语句被 mysqli 拒绝而报错 = 分号通过。"""
-        if report.lookup("select") is not None and report.lookup("select").filtered:
-            self._record(report, token, "符号", "other", note="（select 不可用，无法判定）")
-            return
-        r = self.s.request_value(f"{pre};(select 1){tail}")
+        """1';SET @a=1# → 正常=分号通过（SET 合法执行）；报错=被剥。
+        不依赖 select（其被滤时旧探针会误判分号）。"""
+        r = self.s.request_value(f"{pre};SET @a=1{tail}")
         cls = self._classify(r)
-        self._record(report, token, "符号", cls,
-                     note="（多语句拒绝报错=分号到达解析器）")
+        if cls == "base":
+            self._record(report, token, "符号", "error",
+                         note="（SET 语句正常执行，分号到达解析器）")
+        elif cls == "error":
+            self._record(report, token, "符号", "base", note="（分号被剥离）")
+        else:
+            self._record(report, token, "符号", cls, note="（SET 探针异常）")

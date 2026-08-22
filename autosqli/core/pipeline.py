@@ -156,20 +156,27 @@ class ExtractionPipeline:
             res.tables[db] = tables
             self.log("INFO", f"[脱库] {db} 的表: {tables}")
 
-        # 有干货的表优先
-        hot = []
+        # 取全部列结构
         for db, tables in res.tables.items():
             for t in tables:
-                pri = 2 if INTERESTING.search(t) else 1
-                hot.append((pri, db, t))
+                if self.s.stopped:
+                    break
+                cols = self.list_columns(db, t)
+                res.columns[(db, t)] = cols
+                self.log("INFO", f"[脱库] {db}.{t} 的列: {cols}")
+
+        # 有干货的表优先（表名或列名命中关键词，如数字表名 1919810931114514 藏 flag 列）
+        hot = []
+        for (db, t), cols in res.columns.items():
+            pri = 2 if (INTERESTING.search(t)
+                        or any(INTERESTING.search(c) for c in cols)) else 1
+            hot.append((pri, db, t))
         hot.sort(reverse=True)
 
         for pri, db, t in hot:
             if self.s.stopped:
                 break
-            cols = self.list_columns(db, t)
-            res.columns[(db, t)] = cols
-            self.log("INFO", f"[脱库] {db}.{t} 的列: {cols}")
+            cols = res.columns.get((db, t), [])
             if cols and pri == 2:
                 res.rows[(db, t)] = self.dump_rows(db, t, cols, max_rows)
         return res

