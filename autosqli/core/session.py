@@ -44,6 +44,10 @@ class HttpSession:
         if self.spec.headers:
             s.headers.update(self.spec.headers)
         s.cookies.update(self._shared_cookies)
+        if not self.spec.verify_ssl:
+            s.verify = False
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return s
 
     @property

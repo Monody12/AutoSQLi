@@ -48,7 +48,9 @@ class Engine:
             waf = scanner.scan()
         report.waf = waf
 
-        fp = Fingerprinter(s, report.injection, R_err=det.R_err)
+        builder = PayloadBuilder(report.injection, waf)
+        report.builder = builder
+        fp = Fingerprinter(s, report.injection, R_err=det.R_err, builder=builder)
         report.fingerprint = fp.run(waf)
 
         # 方法推荐

