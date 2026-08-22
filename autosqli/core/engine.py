@@ -46,6 +46,13 @@ class Engine:
         if scan_waf:
             scanner = WafScanner(s, report.injection, R_base=det.R_base, R_err=det.R_err)
             waf = scanner.scan()
+        if report.injection.form == "orinject":
+            # or 双写形态下，字母关键字的「剥离」可还原 → 按「可用」参与方法判定
+            for it in waf.items:
+                if it.filtered and it.token.replace("_", "").isalpha() \
+                        and "剥离" in it.evidence:
+                    it.filtered = False
+                    it.evidence += "（orinject 双写可还原，按可用处理）"
         report.waf = waf
 
         builder = PayloadBuilder(report.injection, waf)

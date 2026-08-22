@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 from .models import InjectionPoint, WafReport
-from ..tampers import apply_form, comma_free, form_sep, to_hex_literal
+from ..tampers import (apply_form, comma_free, form_sep, or_inject,
+                       to_hex_literal)
 
 
 class PayloadBuilder:
@@ -49,7 +50,16 @@ class PayloadBuilder:
     # ------------------------------------------------------------------ transform
     def transform(self, sql: str) -> str:
         """按实测形态变换核心 SQL（空格被滤时切换括号/tab/内联）。"""
-        sql = apply_form(sql, getattr(self.inj, "form", "classic") or "classic")
+        form = getattr(self.inj, "form", "classic") or "classic"
+        if form == "orinject":
+            # 动态保护集取「证据含剥离」的全部字母关键字
+            # （engine 在 orinject 形态下会把 filtered 翻转为可用，故不能按 filtered_list 取）
+            extra = tuple(i.token for i in self.waf.items
+                          if "剥离" in i.evidence
+                          and i.token.replace("_", "").isalpha())
+            sql = or_inject(sql, extra_kws=extra)
+        else:
+            sql = apply_form(sql, form)
         if self.waf.is_filtered(","):
             sql = comma_free(sql)
         return sql

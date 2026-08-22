@@ -16,6 +16,9 @@ from .session import HttpSession
 
 INTERESTING = re.compile(r"flag|user|admin|secret|key|pass|token|config", re.I)
 
+# 系统库不参与业务脱库
+SYSTEM_DBS = {"information_schema", "mysql", "performance_schema", "sys", "test"}
+
 
 @dataclass
 class DumpResult:
@@ -148,7 +151,12 @@ class ExtractionPipeline:
         res.databases = self.list_databases()
         self.log("INFO", f"[脱库] 所有数据库: {res.databases}")
 
-        targets = res.databases if dump_all_dbs else [d for d in [res.database] if d]
+        # 默认覆盖全部用户库（CTF 常见跨库 flag：当前库 geek，flag 在 ctf.Flag）
+        if dump_all_dbs:
+            targets = res.databases
+        else:
+            targets = [d for d in res.databases
+                       if d.lower() not in SYSTEM_DBS] or [res.database]
         for db in targets:
             if self.s.stopped:
                 break
