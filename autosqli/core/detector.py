@@ -145,8 +145,9 @@ class Detector:
                 continue
             if not self._differs(t, f):
                 continue
-            if self._same_as_base(t, 0.9):
-                self.log("INFO", f"数字型注入确认（形态={form}，and 真假差异）")
+            # and 语义真=基线；or 语义假=基线（恒假回落原行），任一成立即可
+            if self._same_as_base(t, 0.9) or self._same_as_base(f, 0.98):
+                self.log("INFO", f"数字型注入确认（形态={form}，{t_core.strip()[:8]} 真假差异）")
                 self.form = form
                 return True
         return False

