@@ -53,7 +53,7 @@ jobs:
       - name: Smoke test CLI (frozen)
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then BIN=AutoSQLi-CLI-Windows-x64.exe; else BIN=./AutoSQLi-CLI-Linux-x64; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN=./AutoSQLi-CLI-Windows-x64.exe; else BIN=./AutoSQLi-CLI-Linux-x64; fi
           $BIN --help
 
       - uses: actions/upload-artifact@v4
