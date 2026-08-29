@@ -9,15 +9,60 @@ import json
 import urllib.parse
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox,
-                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                             QMenu, QMessageBox, QPlainTextEdit, QPushButton,
-                             QSpinBox, QSplitter, QTabWidget, QTableWidget,
-                             QTableWidgetItem, QTextEdit, QTreeWidget,
-                             QTreeWidgetItem, QVBoxLayout, QWidget, QFileDialog)
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout,
+                             QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                             QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                             QPushButton, QSpinBox, QSplitter, QTabWidget,
+                             QTableWidget, QTableWidgetItem, QTextEdit,
+                             QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                             QWidget, QFileDialog)
 
 from ..core.models import TargetSpec
 from .workers import AnalysisWorker, DumpWorker
+
+
+class CopyableTable(QTableWidget):
+    """可复制表格：Ctrl+C 复制选中单元格，右键可复制整表（TSV，可直接粘进 Excel）。"""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
+
+    def keyPressEvent(self, ev):
+        if ev.matches(ev.StandardKey.Copy) and self.selectedIndexes():
+            self._copy_selection()
+        else:
+            super().keyPressEvent(ev)
+
+    def _copy_selection(self):
+        cells = sorted({(i.row(), i.column()) for i in self.selectedIndexes()})
+        if not cells:
+            return
+        rows = {}
+        for r, c in cells:
+            it = self.item(r, c)
+            rows.setdefault(r, {})[c] = it.text() if it else ""
+        QApplication.clipboard().setText("\n".join(
+            "\t".join(rows[r][c] for c in sorted(rows[r])) for r in sorted(rows)))
+
+    def _copy_all(self):
+        head = [self.horizontalHeaderItem(c).text() if self.horizontalHeaderItem(c) else ""
+                for c in range(self.columnCount())]
+        lines = ["\t".join(head)]
+        for r in range(self.rowCount()):
+            lines.append("\t".join(
+                self.item(r, c).text() if self.item(r, c) else ""
+                for c in range(self.columnCount())))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _menu(self, pos):
+        m = QMenu(self)
+        m.addAction("复制选中单元格").triggered.connect(self._copy_selection)
+        m.addAction("复制整表（含表头）").triggered.connect(self._copy_all)
+        m.exec(self.viewport().mapToGlobal(pos))
 
 
 class MainWindow(QMainWindow):
@@ -153,7 +198,7 @@ class MainWindow(QMainWindow):
 
         waf_box = QGroupBox("WAF 过滤清单（全部字典项，含各参数黑名单快扫）")
         v1 = QVBoxLayout(waf_box)
-        self.waf_table = QTableWidget(0, 6)
+        self.waf_table = CopyableTable(0, 6)
         self.waf_table.setHorizontalHeaderLabels(
             ["Token", "参数", "分类", "状态", "判定依据", "绕过建议"])
         self.waf_table.horizontalHeader().setStretchLastSection(True)
@@ -161,11 +206,10 @@ class MainWindow(QMainWindow):
 
         tech_box = QGroupBox("解题方法（★ 推荐 / ✗ 不可行）")
         v2 = QVBoxLayout(tech_box)
-        self.tech_list = QTableWidget(0, 4)
+        self.tech_list = CopyableTable(0, 4)
         self.tech_list.setHorizontalHeaderLabels(["方法", "类别", "可行性", "原因"])
         self.tech_list.setColumnWidth(0, 180)
         self.tech_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.tech_list.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         v2.addWidget(self.tech_list)
 
         run_row = QHBoxLayout()
@@ -204,8 +248,7 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         v = QVBoxLayout(right)
-        self.data_table = QTableWidget(0, 0)
-        self.data_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.data_table = CopyableTable(0, 0)
         v.addWidget(self.data_table)
         export_row = QHBoxLayout()
         btn_json = QPushButton("导出 JSON")

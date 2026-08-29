@@ -117,13 +117,17 @@ AutoSQLi/
 
 ### 下载即用（推荐，无需 Python 环境）
 
-从 [Releases](https://github.com/Monody12/AutoSQLi/releases) 下载 **AutoSQLi.exe**（约 40MB，Windows 单文件）：
+从 [Releases](https://github.com/Monody12/AutoSQLi/releases) 下载（由 GitHub Actions 在推送 `v*` 标签时自动构建发布）：
 
-- **双击 `AutoSQLi.exe`** → 直接打开图形界面；
-- **命令行模式**：`AutoSQLi.exe -u "http://题目地址/" --dump`（参数与下文 CLI 手册一致）；
-- 自带全部字典与依赖，解压即用；慢靶场建议加 `--workers 3`。
+| 产物 | 平台 | 用法 |
+| --- | --- | --- |
+| `AutoSQLi-GUI-Windows-x64.exe` | Windows | 双击打开图形界面（约 40MB） |
+| `AutoSQLi-CLI-Windows-x64.exe` | Windows | 命令行：`AutoSQLi-CLI.exe -u "URL" --dump`（输出可正常回显） |
+| `AutoSQLi-GUI-Linux-x64` | Linux | `chmod +x` 后 `./AutoSQLi-GUI-Linux-x64`（glibc ≥ 2.35） |
+| `AutoSQLi-CLI-Linux-x64` | Linux | `chmod +x` 后 `./AutoSQLi-CLI-Linux-x64 -u "URL" --dump` |
 
-Linux 用户使用源码方式（见下），Release 暂只提供 Windows 构建。
+- 全部产物自带字典与依赖，单文件即用；慢靶场建议加 `--workers 3`；
+- 手动触发构建：Actions 页面 Run workflow（仅产 artifact，不发 Release）。
 
 ### 一键启动 / 停止（源码方式）
 
