@@ -1,0 +1,79 @@
+name: Release
+
+# 触发方式：
+#   1. 推送 v* 标签 → 构建四平台产物并自动发布到 GitHub Releases
+#   2. Actions 页面手动 Run workflow → 仅构建产物（不发 Release，供验证）
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux 用 22.04 构建：glibc 2.35，兼容 Ubuntu 22.04+/Debian 12+ 等主流发行版
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build GUI executable
+        run: pyinstaller AutoSQLi.spec --noconfirm
+
+      - name: Build CLI executable
+        run: pyinstaller AutoSQLi-CLI.spec --noconfirm
+
+      - name: Rename artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          mv dist/AutoSQLi.exe AutoSQLi-GUI-Windows-x64.exe
+          mv dist/AutoSQLi-CLI.exe AutoSQLi-CLI-Windows-x64.exe
+
+      - name: Rename artifacts (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mv dist/AutoSQLi AutoSQLi-GUI-Linux-x64
+          mv dist/AutoSQLi-CLI AutoSQLi-CLI-Linux-x64
+          chmod +x AutoSQLi-*
+
+      - name: Smoke test CLI (frozen)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN=AutoSQLi-CLI-Windows-x64.exe; else BIN=./AutoSQLi-CLI-Linux-x64; fi
+          $BIN --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoSQLi-${{ runner.os }}-x64
+          path: AutoSQLi-*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: rel
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: rel/*
+          generate_release_notes: true
