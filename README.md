@@ -169,6 +169,7 @@ CLI 是 AutoSQLi 的一等使用方式：脚本化、可复制粘贴、输出可
 | `--stage-url URL` | 两步提交入口（先写值再触发：二次注入类题型） |
 | `--base-value` | 被测参数基线值（默认 `1`） |
 | `--delay 秒` | 请求间隔（限速，防封） |
+| `--waf-sig 特征` | 自定义拦截页特征（子串或 `/正则/`），可多次指定，保底手段 |
 | `--no-waf` | 跳过 WAF 字典扫描（快速模式；剥离型 WAF 下不建议） |
 | `--technique KEY` | 指定通道：`union` / `error` / `bool_blind` / `time_blind` / `stacked` / `auto` |
 | `--max-rows N` | 每表最大导出行数（默认 20） |
@@ -206,6 +207,7 @@ python -m autosqli.cli -u "http://题目主页/" --dump     # 无需 -p / check.
 | 强网杯 随便注 | select 等七关键字+点号 | `cli -u ".../index.php?inject=1" --technique stacked --dump` | 堆叠 PREPARE+hex，flag 109 请求 |
 | 极客 LoveSQL | 无 | `cli -u ".../check.php?username=admin&password=admin" -p password --dump` | union，flag 133 请求 |
 | 极客 BabySQL | 关键字 str_replace 剥离 | 同上 | **or 双写自动还原**，跨库 `ctf.Flag` 拿 flag，144 请求 |
+| 都过滤了 | and/or/union/#/--/逗号/空格全滤、吞错、information_schema 拦 | `cli -u "http://题目主页/" --dump` | **减法布尔盲注**（`xxx'-(cond)-'`）+ 表名/列名字典爆破，MD5 密码 1021 请求 |
 
 ### 形态自适应（WAF 感知核心）
 
@@ -218,6 +220,31 @@ python -m autosqli.cli -u "http://题目主页/" --dump     # 无需 -p / check.
 | tab | 空格被滤、%09 可用 | `1'\tunion\tselect\t...` |
 | paren | 空格与 `/**/` 均被滤 | `1'union(select(a),(b))from(t)` |
 | orinject | 关键字被 str_replace 剥离 | `1'unorion selorect ...`（剥离后还原 union select） |
+| arith | 「都过滤了」类：and/or/union/#/--/逗号/空格全被滤 | `xxx'-(ascii(mid((database())from(1)))>97)-'`（减法布尔盲注） |
+
+### WAF 判定的多格式兼容（拦截页千奇百怪也不怕）
+
+CTF 拦截页文案没有统一格式（`illegal character` / `非法字符` / 自定义整活文案），
+工具按四层判定，命中任意一层即可定论：
+
+1. **内置特征**：中英文拦截文案正则（含安全狗/宝塔/雷池等产品特征页）+ 拦截状态码；
+2. **用户自定义特征**：CLI `--waf-sig 非法字符 --waf-sig '/no.?hack/'`（子串或 `/正则/`），
+   GUI「目标 → 高级 → 拦截特征」逗号填写——保底手段，任何时候都可用；
+3. **语义探针（无报错回显环境）**：减法形态下用 `'-0-token-'` 剥离参照法三态定论
+   （被剥离 → 与零页一致；到达解析器 → 报错被吞与基线同页；被拦 → 拦截页），
+   彻底解决「语义不可见 vs 被剥离」无法区分的问题；
+4. **响应聚类**：多个 token 命中彼此一致且显著偏离基线的异常页 → 判定拦截页
+   （格式无关兜底）。
+
+WAF 还会**按参数分别扫描**：登录框常只过滤用户名不过滤密码，其他参数的
+黑名单快扫结果单独列出（不参与注入参数的构造决策）。
+
+### information_schema 被拦时的字典爆破
+
+`information_schema`（含 `or` 子串）被拦时，自动降级为「存在性爆破」：
+`xxx'-(select(0)from(bugkuctf.admin))-'` 表存在 → 表达式为 0（全匹配页），
+不存在 → SQL 报错（吞错页），据此逐词试探内置常用表名/列名字典
+（`dictionaries/bruteforce.yaml`，可自行扩充）。
 
 ## 测试环境
 

@@ -13,7 +13,7 @@ from .models import (AnalysisReport, InjectionPoint, TargetSpec, TechniqueInfo,
 from .oracles import BaseOracle, OracleError
 from .pipeline import DumpResult, ExtractionPipeline
 from .session import HttpSession
-from .waf import WafScanner
+from .waf import WafScanner, quick_param_scan
 from ..techniques import all_techniques
 
 RECOMMEND_ORDER = ("union", "error", "bool_blind", "time_blind", "stacked", "columnless")
@@ -32,18 +32,29 @@ class Engine:
         report = AnalysisReport(target=self.spec, session=self.session)
 
         # 入口自动发现：URL 无被测参数时，解析页面表单/带参链接逐候选试探
+        det = None
         if not s.spec.param and not s.spec.params and not s.spec.body_params:
-            self._auto_discover(report)
-
-        det = Detector(s)
-        report.injection = det.analyze()
+            det = self._auto_discover(report)
+        if det is not None and det.inj_result is not None:
+            # 发现阶段已对该参数完整探测过，直接复用（不再重复跑一遍）
+            report.injection = det.inj_result
+        else:
+            det = Detector(s)
+            report.injection = det.analyze()
         if report.injection is None:
             # 仍输出 WAF 线索（引号转义/关键字拦截），帮助定位防护点
+            # comment=none：探针不含注释符，避免「# 被拦→整包拦截」污染全部判定
             placeholder = InjectionPoint(param=s.spec.param,
                                          base_value=s.spec.base_value,
-                                         numeric=True, comment="#")
+                                         numeric=True, comment="none")
             scanner = WafScanner(s, placeholder, R_base=det.R_base)
             report.waf = scanner.scan(functions=False)
+            # 无注入点时对所有表单参数做黑名单快扫（WAF 常按参数分别过滤）
+            try:
+                quick_param_scan(s, report.waf,
+                                 params=list(s.spec.body_params) + list(s.spec.params))
+            except RuntimeError:
+                pass
             report.notes.append("未发现注入点：可尝试更换被测参数、检查引号是否被转义"
                                 "（见 WAF 报告）或改用 POST/Cookie 位置")
             return report
@@ -52,6 +63,12 @@ class Engine:
         if scan_waf:
             scanner = WafScanner(s, report.injection, R_base=det.R_base, R_err=det.R_err)
             waf = scanner.scan()
+            # 其余参数黑名单快扫：注入参数上的 WAF 清单不代表全部参数
+            # （如登录框只查 uname；passwd 上的过滤情况单独列出，不参与构造决策）
+            try:
+                quick_param_scan(s, waf)
+            except RuntimeError:
+                pass
         if report.injection.form == "orinject":
             # or 双写形态下，字母关键字的「剥离」可还原 → 按「可用」参与方法判定
             for it in waf.items:
@@ -86,17 +103,19 @@ class Engine:
         return report
 
     # ------------------------------------------------------------------ discover
-    def _auto_discover(self, report: AnalysisReport) -> bool:
+    def _auto_discover(self, report: AnalysisReport) -> Optional[Detector]:
         """入口页自动发现：解析表单/带参链接 → 逐候选逐参数试探注入点。
 
-        命中后直接改写 spec（url/method/params/param），主流程无缝续跑。
+        命中后直接改写 spec（url/method/params/param）并返回该候选的
+        Detector（含 inj_result 与 R_base/R_err，供主流程复用免重复探测）；
+        无命中返回 None。
         """
         s = self.session
         spec = s.spec
         candidates = discover(spec.url, s)
         if not candidates:
             s.log("WARN", "[发现] 页面上未找到任何表单或带参链接")
-            return False
+            return None
 
         hits = []
         for cand in candidates:
@@ -119,18 +138,18 @@ class Engine:
                 if inj is not None:
                     s.log("INFO", f"[发现] ✓ 注入点确认: {cand.method} {cand.url} "
                                   f"参数 {pname!r}（闭合 {inj.closure!r}）")
-                    hits.append((cand, pname, inj))
+                    hits.append((cand, pname, inj, det))
                 else:
                     s.log("INFO", f"[试探] ✗ 参数 {pname!r} 无注入")
         if not hits:
             s.log("WARN", "[发现] 所有候选参数均无注入点")
-            return False
+            return None
         if len(hits) > 1:
-            names = "；".join(f"{c.method} {c.url} 参数 {p}" for c, p, _ in hits)
+            names = "；".join(f"{c.method} {c.url} 参数 {p}" for c, p, _, _ in hits)
             report.notes.append(f"共发现 {len(hits)} 个注入点: {names}")
         # 通道质量排序：有 union 回显位的最优（快几个数量级），布尔点次之
         hits.sort(key=lambda h: -len(h[2].echo_positions or []))
-        cand, pname, inj0 = hits[0]
+        cand, pname, inj0, det0 = hits[0]
         if len(hits) > 1:
             s.log("INFO", f"[发现] 共 {len(hits)} 个注入点，选用有回显位的: "
                           f"{cand.method} {cand.url} 参数 {pname!r}")
@@ -145,7 +164,7 @@ class Engine:
         spec.base_value = cand.fields.get(pname) or "1"
         report.notes.append(f"自动发现注入点: {cand.source} → {cand.method} "
                             f"{cand.url} 参数 {pname}")
-        return True
+        return det0
 
     # ------------------------------------------------------------------ solve
     def build_oracle(self, report: AnalysisReport, technique_key: str,

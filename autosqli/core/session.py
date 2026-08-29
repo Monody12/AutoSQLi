@@ -205,7 +205,8 @@ class HttpSession:
         self._sync_cookies(s)
         info = ResponseInfo(status_code=r.status_code, body=r.text,
                             elapsed_ms=elapsed, url=final_url,
-                            headers=dict(r.headers))
+                            headers=dict(r.headers),
+                            custom_waf_patterns=self.spec.waf_signatures)
         flags = info.find_flags()
         for f in flags:
             if f not in self.found_flags:

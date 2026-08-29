@@ -26,6 +26,7 @@ def build_spec(args) -> TargetSpec:
         cookies=cookies, param=args.param,
         base_value=args.base_value,
         request_interval=args.delay,
+        waf_signatures=list(args.waf_sig or []),
     )
     if args.data:
         spec.body_params = dict(kv.split("=", 1) for kv in args.data)
@@ -72,8 +73,12 @@ def main(argv=None):
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
     ap.add_argument("--base-value", default="1", help="被测参数基线值")
     ap.add_argument("--delay", type=float, default=0.0, help="请求间隔秒")
+    ap.add_argument("--waf-sig", action="append", default=[], metavar="SIG",
+                    help="自定义拦截页特征（响应体子串，或 /正则/），可多次指定。"
+                         "例：--waf-sig 非法字符 --waf-sig '/no.?hack/i'")
     ap.add_argument("--no-waf", action="store_true", help="跳过 WAF 扫描（快速模式）")
-    ap.add_argument("--technique", default="union", help="解题方法 key（默认 union）")
+    ap.add_argument("--technique", default="auto",
+                    help="解题方法 key（默认 auto=自动选推荐通道）")
     ap.add_argument("--max-rows", type=int, default=20)
     ap.add_argument("--workers", type=int, default=6,
                     help="盲注并发线程数（网络好可调 12-16）")
@@ -97,7 +102,8 @@ def main(argv=None):
         if report.waf.has_waf:
             print("[*] WAF 线索（即使不可注入，也提示了防护点）:")
             for it in report.waf.filtered_list():
-                print(f"    - 已过滤 {it.token!r}: {it.evidence} | 建议: {it.suggestion or '—'}")
+                loc = f"[{it.param}] " if it.param else ""
+                print(f"    - {loc}已过滤 {it.token!r}: {it.evidence} | 建议: {it.suggestion or '—'}")
         return 1
 
     print("\n========== 分析报告 ==========")
@@ -106,7 +112,8 @@ def main(argv=None):
           f"回显位 {report.injection.echo_positions}")
     print(f"WAF: {'检出 ' + str(len(report.waf.filtered_list())) + ' 项过滤' if report.waf.has_waf else '未检出'}")
     for it in report.waf.filtered_list():
-        print(f"  - 已过滤 {it.token!r}: {it.evidence} | 建议: {it.suggestion or '—'}")
+        loc = f"[{it.param}] " if it.param else ""
+        print(f"  - {loc}已过滤 {it.token!r}: {it.evidence} | 建议: {it.suggestion or '—'}")
     print("指纹:", json.dumps(report.fingerprint.to_dict(), ensure_ascii=False))
     print("可用方法:")
     for t in report.techniques:

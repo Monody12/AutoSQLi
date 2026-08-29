@@ -29,11 +29,17 @@ keywords:
   - {token: mysql,      category: keyword, probe: raw}
   - {token: performance_schema, category: keyword, probe: raw}
   - {token: sys,        category: keyword, probe: raw}
+  # for：免逗号截取 substr(x from p for 1) 的关键连接词（「都过滤了」类被拦）
+  - {token: for,        category: keyword, probe: raw}
+  # password：含 or 子串，str_replace('or') 类黑名单会连带拦截
+  - {token: password,   category: keyword, probe: raw}
 
 functions:
   - {token: database,   category: function, probe: raw}
   - {token: version,    category: function, probe: raw}
   - {token: user,       category: function, probe: raw}
+  # length：布尔/时间通道定长依赖（盲注提取前必须确认可用）
+  - {token: length,     category: function, probe: raw}
   - {token: concat,     category: function, probe: raw}
   - {token: group_concat, category: function, probe: raw}
   - {token: substr,     category: function, probe: raw}

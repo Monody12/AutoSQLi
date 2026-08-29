@@ -65,8 +65,14 @@ class BoolBlind(Technique):
         fp, waf = report.fingerprint, report.waf
         if not fp.boolean_oracle:
             return False, "真假条件无页面差异"
-        if waf.is_filtered("ascii", "ord", "substr", "mid"):
-            return False, "ascii/substr 等截取函数被过滤（可尝试 insert/trim 套娃）"
+        d = get_dialect(fp.dbms)
+        # 按方言实际使用的函数判定（ord 被拦不影响 ascii 通道，反之亦然）
+        if waf.is_filtered(d.blind_code):
+            return False, f"码点函数 {d.blind_code} 被过滤"
+        if waf.is_filtered("length"):
+            return False, "length 被过滤，无法定长"
+        if waf.is_filtered("substr") and waf.is_filtered("mid"):
+            return False, "substr/mid 截取函数均被过滤（可尝试 insert/trim 套娃）"
         return True, "布尔差异可用"
 
     def make_oracle(self, report):
@@ -85,7 +91,11 @@ class TimeBlind(Technique):
             return False, f"{d.name} 无 sleep() 函数（时间盲注需重计算法）"
         if not fp.time_oracle:
             return False, "sleep 延时不可用或未观察到时间差异"
-        if waf.is_filtered("ascii", "ord", "substr", "mid"):
+        if waf.is_filtered(d.blind_code):
+            return False, f"码点函数 {d.blind_code} 被过滤"
+        if waf.is_filtered("length"):
+            return False, "length 被过滤"
+        if waf.is_filtered("substr") and waf.is_filtered("mid"):
             return False, "截取函数被过滤"
         return True, "延时差异可用（速度慢，建议最后选用）"
 

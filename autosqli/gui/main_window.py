@@ -78,10 +78,14 @@ class MainWindow(QMainWindow):
         self.stage_edit.setPlaceholderText("两步提交入口（二次注入/DVWA high 自动配置）")
         self.cookie_edit = QLineEdit("")
         self.cookie_edit.setPlaceholderText("k=v; k2=v2（可选）")
+        self.wafsig_edit = QLineEdit("")
+        self.wafsig_edit.setPlaceholderText(
+            "逗号分隔（如: 非法字符, 拦截, /no.?hack/）——拦截页文案未内置时保底")
         self.waf_check = QCheckBox("启用 WAF 字典扫描（约 70+ 请求）")
         self.waf_check.setChecked(True)
         f3.addRow("Stage 入口", self.stage_edit)
         f3.addRow("Cookie", self.cookie_edit)
+        f3.addRow("拦截特征", self.wafsig_edit)
         f3.addRow("", self.waf_check)
         left.addWidget(g_adv)
         left.addStretch(1)
@@ -147,10 +151,11 @@ class MainWindow(QMainWindow):
 
         split = QSplitter(Qt.Orientation.Horizontal)
 
-        waf_box = QGroupBox("WAF 过滤清单（全部字典项）")
+        waf_box = QGroupBox("WAF 过滤清单（全部字典项，含各参数黑名单快扫）")
         v1 = QVBoxLayout(waf_box)
-        self.waf_table = QTableWidget(0, 5)
-        self.waf_table.setHorizontalHeaderLabels(["Token", "分类", "状态", "判定依据", "绕过建议"])
+        self.waf_table = QTableWidget(0, 6)
+        self.waf_table.setHorizontalHeaderLabels(
+            ["Token", "参数", "分类", "状态", "判定依据", "绕过建议"])
         self.waf_table.horizontalHeader().setStretchLastSection(True)
         v1.addWidget(self.waf_table)
 
@@ -252,6 +257,15 @@ class MainWindow(QMainWindow):
                 if "=" in kv:
                     k, _, v = kv.partition("=")
                     spec.cookies[k.strip()] = v.strip()
+        if self.wafsig_edit.text().strip():
+            import re as _re
+            # 逗号分隔；/正则/ 内的逗号不拆分
+            sigs, cur = [], ""
+            for part in _re.split(r"(?<!/),(?!/)", self.wafsig_edit.text()):
+                part = part.strip()
+                if part:
+                    sigs.append(part)
+            spec.waf_signatures = sigs
         if self.dvwa_check.isChecked():
             spec.login_url = urllib.parse.urlunparse(parsed._replace(path="/login.php", query=""))
             spec.login_user = self.dvwa_user.text()
@@ -299,15 +313,15 @@ class MainWindow(QMainWindow):
                 f"指纹: {report.fingerprint.dbms} {report.fingerprint.version} | "
                 f"当前库 {report.fingerprint.current_db or '?'} | "
                 f"当前用户 {report.fingerprint.current_user or '?'}")
-        # WAF 表
-        items = report.waf.items
+        # WAF 表（注入参数上的判定 + 其他参数黑名单快扫，全部展示）
+        items = list(report.waf.items) + list(report.waf.param_items)
         self.waf_table.setRowCount(len(items))
         for i, it in enumerate(items):
             color = {"已过滤": "#c62828", "可用": "#2e7d32", "未知": "#9e9e9e"}[it.status_text]
-            for j, val in enumerate([it.token, it.category, it.status_text,
+            for j, val in enumerate([it.token, it.param, it.category, it.status_text,
                                      it.evidence, it.suggestion or "—"]):
                 cell = QTableWidgetItem(str(val))
-                if j == 2:
+                if j == 3:
                     from PyQt6.QtGui import QColor
                     cell.setForeground(QColor(color))
                 self.waf_table.setItem(i, j, cell)

