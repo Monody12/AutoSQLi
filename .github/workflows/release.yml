@@ -59,7 +59,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AutoSQLi-${{ runner.os }}-x64
-          path: AutoSQLi-*
+          path: |
+            AutoSQLi-*
+            !AutoSQLi-CLI.spec
           if-no-files-found: error
 
   release:
