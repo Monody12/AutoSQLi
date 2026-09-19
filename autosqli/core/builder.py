@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 from .models import InjectionPoint, WafReport
-from ..tampers import (apply_form, comma_free, form_sep, or_inject,
-                       to_hex_literal)
+from ..tampers import (apply_form, comma_free, form_sep, mixed_case,
+                       or_inject, to_hex_literal)
 
 
 class PayloadBuilder:
@@ -73,6 +73,9 @@ class PayloadBuilder:
             sql = apply_form(sql, form)
         if self.waf.is_filtered(","):
             sql = comma_free(sql)
+        # WAF 扫描实测「大小写混淆可用」→ 关键字全部混合大小写
+        if any("大小写混淆可用" in i.evidence for i in self.waf.items):
+            sql = mixed_case(sql)
         return sql
 
     def wrap(self, core: str, base_value: str | None = None,

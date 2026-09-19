@@ -315,7 +315,18 @@ class WafScanner:
                        pre: str, tail: str):
         payload = f"{pre}{token}{tail}"          # 如 1'and# → 报错=通过；1'# → 正常=被剥离
         r = self._req(payload)
-        self._record(report, token, category, self._classify(r), r=r)
+        item = self._record(report, token, category, self._classify(r), r=r)
+        # 剥离型结论 + 纯字母 token：测大小写混淆。str_replace 类过滤大小写
+        # 敏感（ctf.show web176），sElEcT 到达解析器即语法报错；大小写不敏感
+        # 的过滤会把混合形式一并剥离（响应回基线）。
+        if item.filtered and token.replace("_", "").isalpha() and token.islower():
+            mixed = "".join(c.upper() if i % 2 else c for i, c in enumerate(token))
+            r2 = self._req(f"{pre}{mixed}{tail}")
+            cls2 = self._classify(r2)
+            if cls2 == "error":
+                item.filtered = False
+                item.evidence = f"大小写混淆可用（{mixed} 到达解析器，过滤为大小写敏感）"
+                self.log("INFO", f"[WAF] {self.param}.{token!r}: 大小写混淆绕过可用")
 
     def _probe_symbol(self, report: WafReport, token: str, pre: str, tail: str):
         special = {
