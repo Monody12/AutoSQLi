@@ -31,6 +31,8 @@ class HttpSession:
         self._shared_cookies: dict = dict(spec.cookies)
         self._last_request_time = 0.0
         self._rate_lock = threading.Lock()
+        self._ever_nonempty = False       # 见过非空响应后，空体大概率是瞬态限流
+        self._consecutive_empty = 0
         self.request_count = 0
         self.found_flags: list = []          # 响应中捕获的 flag（EasySQL 类题型）
         self.solution_steps: list = []       # [(阶段, payload, 说明)] 解题方法复盘
@@ -207,6 +209,33 @@ class HttpSession:
                             elapsed_ms=elapsed, url=final_url,
                             headers=dict(r.headers),
                             custom_waf_patterns=self.spec.waf_signatures)
+        # 空响应重试：部分靶场限流/丢包会返回 200+空体（瞬态）。若本会话见过
+        # 非空响应，再空就大概率是瞬态 → 短退避重试一次，仍空则计数告警。
+        # 确定性空体（如 PHP 吞错的 SQL 报错页）重试一次后照常返回，代价可控。
+        if r.status_code == 200 and not r.text and self._ever_nonempty:
+            time.sleep(0.8)
+            try:
+                r2 = s.get(final_url, timeout=self.timeout) if \
+                    self.spec.method.upper() != "POST" else \
+                    s.post(self.spec.url, timeout=self.timeout,
+                           data={k: (value if k == param else str(v))
+                                 for k, v in self.spec.body_params.items()})
+                if r2.text:
+                    info = ResponseInfo(status_code=r2.status_code, body=r2.text,
+                                        elapsed_ms=elapsed, url=final_url,
+                                        headers=dict(r2.headers),
+                                        custom_waf_patterns=self.spec.waf_signatures)
+                    self.log("WARN", "空响应重试成功（疑似限流），已采用重试结果")
+                else:
+                    self._consecutive_empty += 1
+                    if self._consecutive_empty == 4:
+                        self.log("WARN", "连续空响应≥4，目标可能在限流——"
+                                         "建议降低并发(--workers 1-2)或加 --delay")
+            except requests.RequestException:
+                pass
+        if info.body:
+            self._ever_nonempty = True
+            self._consecutive_empty = 0
         flags = info.find_flags()
         for f in flags:
             if f not in self.found_flags:

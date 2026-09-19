@@ -319,7 +319,7 @@ class Detector:
             for n in range(1, 16):
                 if self.s.stopped:
                     return
-                markers = [f"{MARKER_PREFIX}{i:02d}x7" for i in range(n)]
+                markers = self._echo_markers(n)
                 if literal == "quote":
                     cols = ",".join(f"'{m}'" for m in markers)
                 else:
@@ -336,9 +336,16 @@ class Detector:
                                          f"（marker={literal}）")
                         return
 
+    @staticmethod
+    def _echo_markers(n: int) -> list:
+        """回显位标记：字母-only（asqaaa/asqbbb/...）。
+        部分靶场按行过滤回显——含数字的联合行会被整个吞掉（ctf.show web174），
+        数字标记（asq01x7）会让回显位探测全灭。"""
+        return [f"{MARKER_PREFIX}{chr(97 + i % 26) * 3}" for i in range(n)]
+
     def _find_echo_positions(self, inj: InjectionPoint):
         from ..tampers import to_hex_literal
-        markers = [f"{MARKER_PREFIX}{i:02d}x7" for i in range(inj.column_count)]
+        markers = self._echo_markers(inj.column_count)
         for lit in ("quote", "hex"):
             if lit == "quote":
                 cols = ",".join(f"'{m}'" for m in markers)
