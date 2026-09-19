@@ -186,7 +186,10 @@ class WafScanner:
             return "block"
         if r.has_sql_error():
             return "error"
-        if self.err_valid and self.R_err is not None and self.R_err.length and \
+        # 报错参照可为空响应体（PHP or die()/关闭 display_errors 的报错页
+        # 常为 200+0 字节）：此时 similarity 只对同为空的探针返回 1.0，
+        # 不受 `.length` 守卫（会把空报错参照短路成 other→误报拦截）
+        if self.err_valid and self.R_err is not None and \
                 similarity(r, self.R_err) >= 0.93 and r.status_code == self.R_err.status_code:
             return "error"
         if similarity(r, self.R_base) >= 0.985 and r.status_code == self.R_base.status_code:
