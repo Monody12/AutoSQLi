@@ -99,7 +99,7 @@ def sig_match(body_low: str, sig: str) -> bool:
 # 常见 CTF flag 格式：flag{...} / ctfshow{...} / CTF2{...} / DASCTF{...} 等
 FLAG_PATTERN = re.compile(
     r"(?:flag|ctfshow|CTF2|DASCTF|SYC|NSS|BUU|ctf|hgame|moectf|flag_is_here)"
-    r"\{[\x21-\x7e]{4,120}\}", re.I)
+    r"\{[\x21-\x7e]{4,120}?\}", re.I)
 
 
 @dataclass
