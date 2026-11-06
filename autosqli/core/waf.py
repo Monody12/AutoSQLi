@@ -146,10 +146,11 @@ class WafScanner:
     # 依据：CTF 题目页通常直接给出 $sql 与过滤代码，全量 76 项字典是给黑盒
     # 真实站点用的；刷题场景先用小集合，失败再回退全量（--no-fast）。
     FAST_KEYWORDS = {"and", "or", "union", "select", "from", "where", "limit",
-                     "information_schema", "handler", "prepare", "table", "into"}
+                     "information_schema", "handler", "prepare", "table", "into",
+                     "binary"}
     FAST_FUNCTIONS = {"database", "version", "concat", "group_concat", "substr",
                       "mid", "ascii", "ord", "length", "sleep", "updatexml",
-                      "extractvalue", "if"}
+                      "extractvalue", "if", "char"}
     FAST_SYMBOLS = {"space", "'", '"', ",", "=", "#", "--", "/*", "*/", "(", ")", ";"}
 
     def __init__(self, session: HttpSession, injection: InjectionPoint,

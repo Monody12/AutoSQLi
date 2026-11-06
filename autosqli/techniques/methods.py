@@ -68,13 +68,16 @@ class BoolBlind(Technique):
         d = get_dialect(fp.dbms)
         # 按方言实际使用的函数判定（ord 被拦不影响 ascii 通道，反之亦然）
         alt = {"ascii": "ord", "ord": "ascii"}.get(d.blind_code)
-        if waf.is_filtered(d.blind_code) and not (alt and not waf.is_filtered(alt)):
-            return False, f"码点函数 {d.blind_code} 被过滤"
+        code_ok = (not waf.is_filtered(d.blind_code)) or \
+                  (alt and not waf.is_filtered(alt))
+        if not code_ok and waf.is_filtered("char") and waf.is_filtered("'"):
+            return False, f"码点函数 {d.blind_code}、char 与引号均被过滤"
         if waf.is_filtered("length"):
             return False, "length 被过滤，无法定长"
         if waf.is_filtered("substr") and waf.is_filtered("mid"):
             return False, "substr/mid 截取函数均被过滤（可尝试 insert/trim 套娃）"
-        return True, "布尔差异可用"
+        return (True, "布尔差异可用") if code_ok else \
+            (True, "码点函数被拦，改用字符串比较盲注")
 
     def make_oracle(self, report):
         return _mk(report, BoolOracle)

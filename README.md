@@ -210,7 +210,11 @@ python scripts/ctfshow_runner.py --run web181 web182 # 连续多题（自动处�
 - **快速模式**：`--fast` 只扫常用 WAF token（约全量 1/3 请求）；探测阶段已捕获 flag 时
   直接跳过 WAF 扫描 / 指纹 / 脱库；
 - **通道降级**：union 拿不到数据（输出侧过滤）自动降级 bool_blind，再不行 time_blind；
-  码点函数被拦时 `ascii()` ↔ `ord()` 自动互换（web191 实测），不会因单函数被滤就判死整条盲注通道；
+  盲注会按环境自动换招：`ascii()` ↔ `ord()` → 字符串比较（`binary mid(x,p,1)>=char(n)`）
+  → 字符串字面量比较（`char` 也被滤时）；`substr` 被滤自动换 `mid`（web191-194 实测）；
+- **盲注快速定位**：盲注通道跳过 information_schema 枚举，先按常见表名/列名
+  （`ctfshow_user.f1ag`、`ctfshow_flxg.f1ag` 等）count+like 找 flag 行，命中即只取该行
+  （web194：4900 请求 → 959 请求）；
 - **容器复用**：本题容器已在跑就复用，避免撞 60 秒冷却；被限频时自动等待重试。
 
 | 命令 | 用途 |

