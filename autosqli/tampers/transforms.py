@@ -297,3 +297,34 @@ def or_inject(sql: str, extra_kws: tuple = ()) -> str:
     for s, e in sorted(hits, reverse=True):
         sql = sql[:s] + _protect(sql[s:e]) + sql[e:]
     return sql
+
+
+# ---------------------------------------------------------------------------
+# 参数预编码器（目标侧 decode 的逆运算，web210 类）
+# ---------------------------------------------------------------------------
+import base64 as _b64
+
+
+def b64rev2(s: str) -> str:
+    """strrev(base64_decode(strrev(base64_decode($id)))) 的逆：
+    payload → 反转 → b64 → 反转 → b64（去 padding，PHP 解码容忍）。"""
+    a = _b64.b64encode(s[::-1].encode()).decode()
+    return _b64.b64encode(a[::-1].encode()).decode().rstrip("=")
+
+
+def b64rev1(s: str) -> str:
+    """base64_decode(strrev($id)) 的逆。"""
+    return _b64.b64encode(s[::-1].encode()).decode().rstrip("=")
+
+
+def b64plain(s: str) -> str:
+    """base64_decode($id) 的逆。"""
+    return _b64.b64encode(s.encode()).decode().rstrip("=")
+
+
+ENCODERS = {"b64rev2": b64rev2, "b64rev1": b64rev1, "b64": b64plain}
+
+
+def apply_encoder(s: str, name: str) -> str:
+    fn = ENCODERS.get(name or "")
+    return fn(s) if fn else s

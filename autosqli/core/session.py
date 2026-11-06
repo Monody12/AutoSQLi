@@ -162,6 +162,10 @@ class HttpSession:
         if self.stopped:
             raise RuntimeError("session stopped")
         param = param or self.spec.param
+        # 参数预编码器（web210 类：目标侧先 decode 再拼 SQL，这里做逆运算）
+        if getattr(self.spec, "value_encoder", ""):
+            from ..tampers import apply_encoder
+            value = apply_encoder(value, self.spec.value_encoder)
         s = self.session
         if self.spec.stage_url:
             stage_param = self.spec.stage_param or param
