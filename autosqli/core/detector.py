@@ -60,6 +60,11 @@ class Detector:
             self.log("ERROR", "基线请求失败，请检查目标 URL / 登录配置")
             return None
         self.log("INFO", f"基线响应: {self.R_base.status_code}, {self.R_base.length}B")
+        if self.R_base.status_code == 404:
+            # 快速失败：入口路径不存在（ctf.show 换题后仍用旧链接的典型症状）
+            self.log("ERROR", f"入口 404（{self.R_base.length}B）：URL 路径不对或容器已回收，"
+                              "先确认题目入口再探测")
+            return None
 
         inj = InjectionPoint(param=spec.param, base_value=spec.base_value)
         # 数字型优先（medium 类转义环境下引号闭合会造成误判）

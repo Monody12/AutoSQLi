@@ -142,6 +142,16 @@ def quick_param_scan(session: HttpSession, report: WafReport,
 
 
 class WafScanner:
+    # --fast 模式：只探「构造当前通道真正会用到」的 token，请求数约为全量的 1/3。
+    # 依据：CTF 题目页通常直接给出 $sql 与过滤代码，全量 76 项字典是给黑盒
+    # 真实站点用的；刷题场景先用小集合，失败再回退全量（--no-fast）。
+    FAST_KEYWORDS = {"and", "or", "union", "select", "from", "where", "limit",
+                     "information_schema", "handler", "prepare", "table", "into"}
+    FAST_FUNCTIONS = {"database", "version", "concat", "group_concat", "substr",
+                      "mid", "ascii", "length", "sleep", "updatexml",
+                      "extractvalue", "if"}
+    FAST_SYMBOLS = {"space", "'", '"', ",", "=", "#", "--", "/*", "*/", "(", ")", ";"}
+
     def __init__(self, session: HttpSession, injection: InjectionPoint,
                  R_base: Optional[ResponseInfo] = None,
                  R_err: Optional[ResponseInfo] = None):
@@ -231,23 +241,28 @@ class WafScanner:
 
     # ------------------------------------------------------------------ main
     def scan(self, keywords: bool = True, functions: bool = True,
-             symbols: bool = True) -> WafReport:
+             symbols: bool = True, fast: bool = False) -> WafReport:
         report = WafReport()
         pre, tail = self._prefix(), self._tail()
 
+        def _only(entries, keep):
+            if not fast:
+                return entries
+            return [e for e in entries if e.get("token") in keep]
+
         if keywords:
-            for e in self.kw_dict["keywords"]:
-                if self.s.stopped:
+            for e in _only(self.kw_dict["keywords"], self.FAST_KEYWORDS):
+                if self.s.stopped or self.s.found_flags:
                     break
                 self._probe_generic(report, e["token"], e["category"], pre, tail)
         if functions:
-            for e in self.kw_dict["functions"]:
-                if self.s.stopped:
+            for e in _only(self.kw_dict["functions"], self.FAST_FUNCTIONS):
+                if self.s.stopped or self.s.found_flags:
                     break
                 self._probe_generic(report, e["token"], e["category"], pre, tail)
         if symbols:
-            for e in self.sym_dict["symbols"]:
-                if self.s.stopped:
+            for e in _only(self.sym_dict["symbols"], self.FAST_SYMBOLS):
+                if self.s.stopped or self.s.found_flags:
                     break
                 self._probe_symbol(report, e["token"], pre, tail)
 

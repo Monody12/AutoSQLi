@@ -37,6 +37,8 @@ class HttpSession:
         self.found_flags: list = []          # 响应中捕获的 flag（EasySQL 类题型）
         self.solution_steps: list = []       # [(阶段, payload, 说明)] 解题方法复盘
         self._stop = threading.Event()
+        # 单题时间预算（--max-seconds）：到点后 stopped 变 True，各循环自然收工
+        self.deadline: Optional[float] = None
 
     def record_step(self, title: str, payload: str, note: str = ""):
         """登记解题关键步骤（供复盘报告：知其然并知其所以然）。相同步骤去重。"""
@@ -73,7 +75,9 @@ class HttpSession:
 
     @property
     def stopped(self) -> bool:
-        return self._stop.is_set()
+        if self._stop.is_set():
+            return True
+        return self.deadline is not None and time.time() > self.deadline
 
     # ------------------------------------------------------------------ login
     def login(self) -> bool:

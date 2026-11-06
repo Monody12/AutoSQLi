@@ -191,6 +191,31 @@ CLI 是 AutoSQLi 的一等使用方式：脚本化、可复制粘贴、输出可
 python -m autosqli.cli -u "http://题目主页/" --dump     # 无需 -p / check.php 路径
 ```
 
+### ctf.show 刷题模式（battle：一道题一条命令）
+
+ctf.show 每题一个容器、同一账号同时只能开一个，且开容器有 60 秒写冷却。工具为此内置了专用流程：
+
+```bash
+python scripts/ctfshow_battle.py web180              # 单题：开容器 → 定位入口 → 分析 → 脱库 → 一行战报
+python scripts/ctfshow_runner.py --list              # 进度总览（本地 runs/）
+python scripts/ctfshow_runner.py --run web181 web182 # 连续多题（自动处理 60s 冷却）
+```
+
+- **入口自动定位**：容器首页 → 挑战页（`select-*.php`）→ 实测页面 `action`（要求返回 `{"code":..}`），
+  兼容 web176 起「页面 action 造假/404」「`/api/` 目录索引」等情况；
+- **恒真探针**：检出注入点后立刻试 `or 1=1`。题目常用 `username != 'flag'` 把 flag 行过滤掉，
+  但恒真条件会把它带回响应，命中即收工（web179：68 请求 / 7.6 秒）；
+- **快速模式**：`--fast` 只扫常用 WAF token（约全量 1/3 请求）；探测阶段已捕获 flag 时
+  直接跳过 WAF 扫描 / 指纹 / 脱库；
+- **通道降级**：union 拿不到数据（输出侧过滤）自动降级 bool_blind，再不行 time_blind；
+- **容器复用**：本题容器已在跑就复用，避免撞 60 秒冷却；被限频时自动等待重试。
+
+| 命令 | 用途 |
+| --- | --- |
+| `ctfshow_battle.py webN` | 单题一键作战：一行战报 + 完整日志 `runs/webN.log` |
+| `ctfshow_runner.py --list` | 题目与本地进度总览 |
+| `ctfshow_runner.py --run webA webB` | 连续多题，自动冷却 |
+
 ### 输出解读
 
 1. **注入点行**：闭合/注释/列数/回显位；
@@ -212,6 +237,11 @@ python -m autosqli.cli -u "http://题目主页/" --dump     # 无需 -p / check.
 | 极客 LoveSQL | 无 | `cli -u ".../check.php?username=admin&password=admin" -p password --dump` | union，flag 133 请求 |
 | 极客 BabySQL | 关键字 str_replace 剥离 | 同上 | **or 双写自动还原**，跨库 `ctf.Flag` 拿 flag，144 请求 |
 | 都过滤了 | and/or/union/#/--/逗号/空格全滤、吞错、information_schema 拦 | `cli -u "http://题目主页/" --dump` | **减法布尔盲注**（`xxx'-(cond)-'`）+ 表名/列名字典爆破，MD5 密码 1021 请求 |
+| ctf.show web173 | 回包含 flag 即改写 | `battle.py web173` | union，120 请求 / 72s |
+| ctf.show web174 | 输出含数字/flag 即吞 | `battle.py web174` | 字母编码 union + `--max-rows 60`，157 请求 / 44s |
+| ctf.show web175 | 响应 data 永远清空 | 手工 `into outfile` | 写 `/var/www/html/flag.txt` 后读取，2 请求 |
+| ctf.show web179 | 无过滤，flag 行被 `username!='flag'` 排除 | `battle.py web179` | 恒真探针直接带回 flag，68 请求 / 7.6s |
+| ctf.show web180 | and/or/=/#/--/逗号/空格全滤 | `battle.py web180` | 减法布尔盲注，5147 请求 / 207s |
 
 ### 形态自适应（WAF 感知核心）
 

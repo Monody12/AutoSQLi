@@ -77,12 +77,20 @@ def main(argv=None):
                     help="自定义拦截页特征（响应体子串，或 /正则/），可多次指定。"
                          "例：--waf-sig 非法字符 --waf-sig '/no.?hack/i'")
     ap.add_argument("--no-waf", action="store_true", help="跳过 WAF 扫描（快速模式）")
+    ap.add_argument("--fast", action="store_true",
+                    help="WAF 只扫常用 token（约 1/3 请求）；刷题场景推荐，失败再关掉")
+    ap.add_argument("--max-seconds", type=float, default=0.0,
+                    help="单题时间预算（秒），到点保留部分结果并退出")
+    ap.add_argument("--timeout", type=float, default=25.0,
+                    help="单请求超时秒数（默认 25；刷题环境建议 10-12）")
     ap.add_argument("--technique", default="auto",
                     help="解题方法 key（默认 auto=自动选推荐通道）")
     ap.add_argument("--max-rows", type=int, default=20)
     ap.add_argument("--workers", type=int, default=6,
                     help="盲注并发线程数（网络好可调 12-16）")
     ap.add_argument("--dump", action="store_true", help="分析后直接全自动脱库")
+    ap.add_argument("--force-dump", action="store_true",
+                    help="即使探测阶段已捕获 flag 也继续完整脱库")
     ap.add_argument("--report", default="", help="分析报告输出 JSON 路径")
     ap.add_argument("--solution", default="", help="解题方法复盘输出 Markdown 路径")
     ap.add_argument("--quiet", action="store_true", help="不打印请求日志")
@@ -93,7 +101,10 @@ def main(argv=None):
          else print(f"[{lvl}] {msg}", flush=True))
 
     spec = build_spec(args)
-    engine = Engine(spec, log=log)
+    engine = Engine(spec, log=log, fast=args.fast, timeout=args.timeout)
+    if args.max_seconds > 0:
+        import time
+        engine.session.deadline = time.time() + args.max_seconds
     report = engine.analyze(scan_waf=not args.no_waf)
     if report.injection is None:
         print("[-] 未发现注入点")
@@ -126,17 +137,46 @@ def main(argv=None):
         print(f"\n[*] 报告已写入 {args.report}")
 
     if args.dump:
-        key = args.technique
-        # 自动挑选推荐方法
-        if key == "auto":
+        if engine.session.found_flags and not args.force_dump:
+            # flag 已在探测响应里拿到：刷题场景就此收工（要完整数据用 --force-dump）
+            print("\n[FLAG] 🎉 " + " / ".join(engine.session.found_flags))
+            print(f"[+] 请求数: {engine.session.request_count}（已拿 flag，跳过脱库）")
+            return 0
+        keys = []
+        if args.technique == "auto":
             rec = [t for t in report.techniques if t.feasible and t.recommended]
-            key = rec[0].key if rec else (report.techniques[0].key if report.techniques else "union")
-        print(f"\n========== 开始脱库（通道: {key}） ==========")
-        try:
-            result = engine.solve(report, key, max_rows=args.max_rows,
-                                  workers=args.workers)
-        except OracleError as e:
-            print(f"[-] 通道构造失败: {e}")
+            keys = [t.key for t in rec]
+            # 回显通道拿到 0 行（输出侧过滤吞掉含数字的行，如 web174）时，
+            # 自动降级到布尔盲注——它在「响应是否有数据」上仍有区分度
+            for t in report.techniques:
+                if t.feasible and t.key in ("bool_blind", "time_blind") \
+                        and t.key not in keys:
+                    keys.append(t.key)
+            if not keys:
+                keys = [report.techniques[0].key] if report.techniques else ["union"]
+        else:
+            keys = [args.technique]
+
+        result = None
+        for attempt, key in enumerate(keys[:3]):
+            if engine.session.stopped:
+                print("[-] 时间预算用尽，停止")
+                break
+            print(f"\n========== 开始脱库（通道: {key}） ==========")
+            try:
+                result = engine.solve(report, key, max_rows=args.max_rows,
+                                      workers=args.workers)
+            except OracleError as e:
+                print(f"[-] 通道 {key} 构造失败: {e}")
+                continue
+            if engine.session.found_flags:
+                break
+            if result.rows:
+                break
+            if attempt + 1 < len(keys):
+                print(f"[*] 通道 {key} 未取到数据，降级到 {keys[attempt + 1]}")
+        if result is None:
+            print("[-] 所有通道均构造失败")
             return 2
         print("\n========== 脱库结果 ==========")
         d = result.to_dict()
