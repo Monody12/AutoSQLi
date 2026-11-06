@@ -35,6 +35,7 @@ class TargetSpec:
     stage_param: str = ""                     # 默认同 param
     stage_method: str = "POST"                # stage 写入请求方式
 
+    time_sec: float = 0.0                     # 时间盲注睡眠秒数（0=默认 2s）
     value_encoder: str = ""                   # 参数预编码器名（web210 类：目标先 decode 再拼 SQL）
     request_interval: float = 0.0             # 每次请求间隔（秒）
     verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验

@@ -27,6 +27,7 @@ def build_spec(args) -> TargetSpec:
         cookies=cookies, headers=headers, param=args.param,
         raw_body=args.raw_body,
         value_encoder=args.encode,
+        time_sec=args.time_sec,
         base_value=args.base_value,
         request_interval=args.delay,
         waf_signatures=list(args.waf_sig or []),
@@ -83,6 +84,8 @@ def main(argv=None):
     ap.add_argument("--encode", default="",
                     help="参数预编码器（目标侧先 decode 再拼 SQL，web210 类）："
                          "b64rev2 / b64rev1 / b64")
+    ap.add_argument("--time-sec", type=float, default=0.0,
+                    help="时间盲注睡眠秒数（默认 2，RTT 低的环境可 1 提速）")
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
     ap.add_argument("--stage-method", default="POST", help="stage 请求方式（默认 POST）")
     ap.add_argument("--stage-param", default="",

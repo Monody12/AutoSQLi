@@ -269,6 +269,43 @@ python -m autosqli.cli -u ".../api/index.php" -p id --method PUT --data id=1 \
 取页面下发的 `PHPSESSID`，并用 `--stage-url … --stage-method GET --stage-param @none`
 给每个请求前置一次 token 刷新（等价 sqlmap 的 `--safe-url` + `--safe-freq=1`）。
 
+### 空格/*/＝ 同拦与 select 剥离（web209 类：分隔符自动降级）
+
+waf 为 `preg_match('/ |\*|\=/')`（整体拒绝，默认失败页）+ 后端
+`str_replace('select','',$id)`（大小写敏感单次剥离）的环境里，`/**/` 因 `*`
+被拦而失效。分隔符按 WAF 符号实测自动降级：`/**/` 可用 → 内联；`*` 同拦 →
+括号法 `union(select(A),(B),(C))`；括号也被拦 → tab。select 被剥离时 union
+优先探测再叠加**大小写混淆**（`union\tSeLeCt\t…`，tab 在黑名单外）。SQL
+出错时响应为空体（PHP fetch(false) fatal），探测的「无回显」判定均按此校准。
+
+`=` 被滤时布尔参照对 `1=1/1=2` 会退化成常量 `11/12`：全部 joiner 改用
+like 型对 `and((1)like(1)) / and((1)like(2))`；减法两态用常量对；二分条件的
+`x>=m` 等价改写为 `x>m-1`（`BaseOracle._ge`）；information_schema 的
+`table_schema=` 等值条件降级 `like`，`count(*)` 降级 `count(1)`。
+
+### 参数预编码（web210 类：目标侧先 decode 再拼 SQL）
+
+题目在拼接前对参数做 `strrev(base64_decode(strrev(base64_decode($id))))`
+时，注入串必须先做逆运算。battle 从题面源码识别 decode 链并自动
+`--encode b64rev2`（另有 b64rev1/b64），CLI 亦可手动指定；探测请求同样过
+编码器，入口定位因此能拿到真实数据。
+
+### 时间盲注族（web214 类：页面即接口、200 空体）
+
+无表单、无回显、无布尔差异的纯时间盲注：battle 逐候选参数（id/ip/username）
+探 `api/index.php`，`debug=1` 会回显 SQL（`select id from ctfshow_info where
+ip = …`）从中确认真实参数名；UA 网关是反的（带 sqlmap UA 才被拦，自动翻转
+为浏览器 UA）。检测器新增**时间盲注兜底**：闭合/布尔/union 全灭后直接试
+`base or sleep(4)#`，延时 ≥3.5s 即确认注入点。`--time-sec 1` 可把睡眠降到
+1s（RTT 低的环境提速一倍）。
+
+### os-shell 兜底（web213 类：flag 不在库里、在文件系统）
+
+脱库完成却无 flag 时，battle 自动转 `scripts/ctfshow_osshell.py`：
+`union … INTO OUTFILE` 写 webshell（全 tab 免空格、INTO 在括号外、PHP 体用
+hex 字面量）→ HTTP 执行命令 → `ls`/`grep` 定位含 `ctfshow{` 的文件并读取。
+每条注入请求前同样自动刷新一次性 token。
+
 ### 输出解读
 
 1. **注入点行**：闭合/注释/列数/回显位；
@@ -298,6 +335,11 @@ python -m autosqli.cli -u ".../api/index.php" -p id --method PUT --data id=1 \
 | ctf.show web183 | 无 form、POST `tableName`、`select count(pass) from 表名` | `ctfshow_count_blind.py --url .../select-waf.php` | 反引号去空格 + like 前缀，0.6k 请求 |
 | ctf.show web184 | 引号、`=`、`where` 被滤 | `... --style having` | `group by pass having pass like 0x<hex>` |
 | ctf.show web185/186 | 数字、引号、反引号、`%` 被滤 | `... --style chr_regexp` | `chr(true+true+..)` 拼字符串 + `regexp()` |
+| ctf.show web209 | 空格/*/＝同拦 + `str_replace('select','')` | `battle.py web209` | tab+大小写混淆 union，219 请求 / 35s |
+| ctf.show web210 | 双重 base64+strrev 解码参数 | `battle.py web210` | 编码器自动识别，union，137 请求 / 23s |
+| ctf.show web211/212 | 同上变体 | `battle.py web211/212` | union，166 请求一次通过 |
+| ctf.show web213 | web209 waf + web210 解码，flag 在文件系统 | `battle.py web213` | 脱库无 flag → os-shell 兜底写 webshell 搜得 |
+| ctf.show web214 | 无回显纯时间盲注，UA 网关反向 | `battle.py web214` | debug=1 发现参数 ip，time-sec=1 磨出 flag |
 
 ### 表名位置 / count 盲注（web183-web186 类题型）
 

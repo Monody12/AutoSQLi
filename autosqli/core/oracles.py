@@ -529,8 +529,10 @@ class TimeOracle(BaseOracle):
     name = "time"
     THRESHOLD_MS = 1800
 
-    def __init__(self, *a, delay: float = 2.0, **kw):
+    def __init__(self, *a, delay: float = 0.0, **kw):
         super().__init__(*a, **kw)
+        if not delay:
+            delay = getattr(self.s.spec, "time_sec", 0) or 2.0
         self.delay = delay
         if self.waf.is_filtered("sleep"):
             raise OracleError("sleep 被过滤，时间通道不可用")
