@@ -299,6 +299,22 @@ ip = …`）从中确认真实参数名；UA 网关是反的（带 sqlmap UA 才
 `base or sleep(4)#`，延时 ≥3.5s 即确认注入点。`--time-sec 1` 可把睡眠降到
 1s（RTT 低的环境提速一倍）。
 
+### 时间盲注的 benchmark 模式（web217 类：sleep 被拦）
+
+`sleep` 被目标专拦时（页面 waf 明牌 `/sleep/i`，且空响应族扫描看不见），时间
+通道自动切换 **benchmark 校准模式**：先发 `benchmark(300000,md5(0x616263))`
+测出本机速度，再按目标延时换算迭代数 K；求值用
+`if((cond),benchmark(K,md5(…)),0)`——<span style="color:red">不能写
+`K*(cond)`</span>，web217 的隐藏 api waf 拒 `*`（空响应族看不见，只能靠
+"同载荷去掉 `*` 就活了"反推）。迭代数务必压小：2e6 级的 benchmark 会把共享
+宿主上的容器直接堵死（PHP worker 被 CPU 密集查询占满，连基线都超时）。
+闭合形态注意：模板 `ip = ($id)` 要求以 `'')` 闭合（空字符串填括号再闭合），
+`1'')`（数字+引号对）是语法错误，裸 `) 探针在部分形态下碰巧可用但不可靠。
+
+已知缺口（web217 未收官）：隐藏 waf 还会剥离输入中的 `_`，
+`information_schema`/`ctfshow_*` 表名含 `_` 一律失效，盲注枚举需要
+"无下划线引用"策略（相关名子查询/文件通道）才能取到 flag 表。
+
 ### os-shell 兜底（web213 类：flag 不在库里、在文件系统）
 
 脱库完成却无 flag 时，battle 自动转 `scripts/ctfshow_osshell.py`：
