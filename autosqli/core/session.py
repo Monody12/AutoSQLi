@@ -236,7 +236,8 @@ class HttpSession:
         # 非空响应，再空就大概率是瞬态 → 短退避重试一次，仍空则计数告警。
         # 确定性空体（如 PHP 吞错的 SQL 报错页）重试一次后照常返回，代价可控。
         if r.status_code == 200 and not r.text and self._ever_nonempty \
-                and not getattr(self.spec, "raw_body", False):
+                and not getattr(self.spec, "raw_body", False)\
+                and not getattr(self.spec, "empty_ok", False):
             time.sleep(0.8)
             try:
                 r2 = s.get(final_url, timeout=self.timeout) if \

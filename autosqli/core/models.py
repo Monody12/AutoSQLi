@@ -36,6 +36,8 @@ class TargetSpec:
     stage_method: str = "POST"                # stage 写入请求方式
 
     time_sec: float = 0.0                     # 时间盲注睡眠秒数（0=默认 2s）
+    table_hint: str = ""                      # 基础查询表名提示（battle 从 debug 回显解析）
+    empty_ok: bool = False                    # 200 空体是正常答案（时间盲注族），禁用空响应重试
     value_encoder: str = ""                   # 参数预编码器名（web210 类：目标先 decode 再拼 SQL）
     request_interval: float = 0.0             # 每次请求间隔（秒）
     verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验

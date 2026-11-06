@@ -30,7 +30,7 @@ from ctfshow_runner import Api, by_name, challenges, load_cookie  # noqa: E402
 RUNS = os.path.join(ROOT, "runs")
 FLAG_RE = re.compile(r"(?:ctfshow|flag|CTF|FLAG)\{[^}\s'\"]{1,120}\}")
 # 会话级附加信息（PHPSESSID / stage 刷新地址），由 resolve_entry 填、main 读
-LAST = {"sid": "", "stage": "", "encoder": ""}
+LAST = {"sid": "", "stage": "", "encoder": "", "empty_ok": False}
 SQL_RE = re.compile(r"\$sql\s*=\s*\"([^\"]{5,400})\"")
 ACTION_RE = re.compile(r'<div[^>]*class="[^"]*layui-form[^"]*"[^>]*action="([^"]+)"')
 FALLBACK_ACTION_RE = re.compile(r'action="([^"]+\.php[^"]*)"')
@@ -221,6 +221,7 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
             last_err = f"{page} 自提交页探测失败"
             # 时间盲注族（web214）：页面即接口或走 api/、200 空体。
             # debug=1 会回显 SQL，可从中确认真实参数名（优先，最可靠）
+            LAST["empty_ok"] = True      # 时间盲注族：空体是正常答案
             api_cands = [urllib.parse.urljoin(base, "api/index.php"),
                          urllib.parse.urljoin(base, "api/")]
             for u in api_cands:
@@ -231,6 +232,9 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
                         continue
                     m2 = re.search(r"where\s+(\w+)\s*=", body)
                     if m2:
+                        m3 = re.search(r"from\s+([a-zA-Z_][\w]*)", body)
+                        if m3:
+                            LAST["table_hint"] = m3.group(1)
                         return _result(u, m2.group(1), "POST", html,
                                        {"debug": "0"}, hdrs)
                 # debug 无回显时退回空体接受（时间盲注族无回显属正常）
@@ -320,6 +324,10 @@ def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
                 "--stage-param", "@none"]
     if LAST.get("encoder"):
         cmd += ["--encode", LAST["encoder"]]
+    if LAST.get("table_hint"):
+        cmd += ["--table-hint", LAST["table_hint"]]
+    if LAST.get("empty_ok"):
+        cmd.append("--empty-ok")
     if method.upper() == "PUT":
         # web203 类接口直读 php://input：body 必须原样发，URL 编码后 # 不还原
         cmd.append("--raw-body")
