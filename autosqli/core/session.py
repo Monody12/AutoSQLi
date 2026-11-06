@@ -189,14 +189,19 @@ class HttpSession:
         final_url = ""
         for attempt in (1, 2):        # 慢环境网络抖动重试一次
             try:
-                if self.spec.method.upper() == "POST":
-                    body = {k: (value if k == param else str(v))
-                            for k, v in self.spec.body_params.items()}
+                m = self.spec.method.upper()
+                body = {k: (value if k == param else str(v))
+                        for k, v in self.spec.body_params.items()}
+                if m == "POST":
                     r = s.post(self.spec.url, data=body, timeout=self.timeout)
                     final_url = self.spec.url
-                else:
+                elif m == "GET":
                     final_url = self.build_url(value, param)
                     r = s.get(final_url, timeout=self.timeout)
+                else:
+                    # 任意方法（web203 实测要 PUT + text/plain）：参数放表单体里
+                    r = s.request(m, self.spec.url, data=body, timeout=self.timeout)
+                    final_url = self.spec.url
                 break
             except requests.RequestException as e:
                 if attempt == 1:

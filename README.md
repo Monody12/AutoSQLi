@@ -247,7 +247,14 @@ python -m autosqli.cli -u ".../api/" -p id --dump \
 ```
 
 同一模块还会出现「只接受 POST」的题（web202）：GET 也能返回 JSON 但恒为空
-`data`，因此接口选择以「返回非空 data」为准，GET 不行自动换 POST。
+`data`，因此接口选择以「返回非空 data」为准，GET 不行自动换 POST。更进一步的
+题要求 **PUT + `Content-Type: text/plain`**（web203），CLI 的 `--method` 已支持
+任意方法，battle 会依次尝试 GET/POST/PUT 并自动带 `text/plain`：
+
+```bash
+python -m autosqli.cli -u ".../api/index.php" -p id --method PUT --data id=1 \
+    --header "Content-Type=text/plain" --dump
+```
 
 ### 输出解读
 

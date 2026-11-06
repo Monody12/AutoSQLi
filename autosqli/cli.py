@@ -31,7 +31,8 @@ def build_spec(args) -> TargetSpec:
     )
     if args.data:
         spec.body_params = dict(kv.split("=", 1) for kv in args.data)
-        spec.method = "POST"
+        # 显式指定了非 GET 方法（如 PUT）时保留，否则按表单惯例走 POST
+        spec.method = args.method if args.method.upper() != "GET" else "POST"
     if args.dvwa:
         user, _, pwd = args.dvwa.partition(":")
         spec.login_url = f"{urllib.parse.urlunparse(parsed._replace(path='/login.php', query=''))}"
@@ -66,7 +67,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="autosqli", description="CTF SQL 注入自动化分析（WAF 感知）")
     ap.add_argument("-u", "--url", required=True, help="目标 URL")
     ap.add_argument("-p", "--param", default="", help="被测参数名（默认自动选择第一个）")
-    ap.add_argument("--method", default="GET", choices=["GET", "POST"])
+    ap.add_argument("--method", default="GET",
+                    help="请求方式：GET/POST，或任意方法（如 PUT，web203 类）")
     ap.add_argument("--data", nargs="*", help="POST 表单 k=v")
     ap.add_argument("--cookie", nargs="*", help="Cookie k=v")
     ap.add_argument("--header", nargs="*", help="附加请求头 k=v（可多次；如 User-Agent=sqlmap/1.5）")

