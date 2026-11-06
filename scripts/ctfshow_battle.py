@@ -27,6 +27,8 @@ from ctfshow_runner import Api, by_name, challenges, load_cookie  # noqa: E402
 
 RUNS = os.path.join(ROOT, "runs")
 FLAG_RE = re.compile(r"(?:ctfshow|flag|CTF|FLAG)\{[^}\s'\"]{1,120}\}")
+# 会话级附加信息（PHPSESSID / stage 刷新地址），由 resolve_entry 填、main 读
+LAST = {"sid": "", "stage": ""}
 SQL_RE = re.compile(r"\$sql\s*=\s*\"([^\"]{5,400})\"")
 ACTION_RE = re.compile(r'<div[^>]*class="[^"]*layui-form[^"]*"[^>]*action="([^"]+)"')
 FALLBACK_ACTION_RE = re.compile(r'action="([^"]+\.php[^"]*)"')
@@ -60,21 +62,49 @@ def _gate_headers(body: str, headers: dict) -> dict:
     return h
 
 
+def container_sid(page_url: str) -> str:
+    """访问题目页拿 PHPSESSID（api 鉴权绑定会话，web205 类）。"""
+    try:
+        import requests
+        import urllib3
+        urllib3.disable_warnings()
+        s = requests.Session()
+        s.verify = False
+        s.get(page_url, timeout=20)
+        return s.cookies.get("PHPSESSID", "")
+    except Exception:      # noqa: BLE001
+        return ""
+
+
 def probe_json(url: str, method: str, param: str, cookie: str,
-               headers: dict) -> tuple[bool, dict, str]:
+               headers: dict, stage: str = "") -> tuple[bool, dict, str]:
     """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。"""
+    body = ""
     for _ in range(3):
+        if stage:
+            http_get(stage, cookie, headers)      # 刷新一次性 token（web205）
         if method.upper() == "GET":
             s, body = http_get(f"{url}?{param}=1", cookie, headers)
         else:
             s, body = http_post(url, {param: "1"}, cookie, headers, method=method)
-        if s == 200 and body.lstrip().startswith('{"code"'):
+        if s == 200 and body.lstrip().startswith('{"code"') \
+                and not _is_auth_fail(body):
             return True, headers, body
         new = _gate_headers(body, headers)
         if new == headers:
             break
         headers = new
-    return False, headers, ""
+    return False, headers, body
+
+
+def _is_auth_fail(body: str) -> bool:
+    """JSON 里中文被转义成 \\u9274..，不能直接子串匹配「api鉴权失败」。"""
+    import json as _json
+    try:
+        msg = str(_json.loads(body).get("msg", ""))
+    except Exception:      # noqa: BLE001
+        msg = body
+    return "鉴权" in msg or "api\\u9274" in body
 
 
 def _has_data(body: str) -> bool:
@@ -166,13 +196,24 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
         for n in ([guess - 1, guess, guess + 1, guess + 2] if guess else []):
             cands.append(urllib.parse.urljoin(base, f"api/v{n}.php"))
         real, hdrs, method, fallback = "", {}, "GET", None
+        sid = container_sid(base + page)
+        LAST["sid"] = sid
+        ho = {"Cookie": f"PHPSESSID={sid}"} if sid else {}
+        stage = ""
         for cand in dict.fromkeys(cands):
             if not cand:
                 continue
             for m in ("GET", "POST", "PUT"):
                 # PUT 类网关要求 Content-Type: text/plain（web203 实测）
-                h0 = {"Content-Type": "text/plain"} if m == "PUT" else {}
-                ok, h, body = probe_json(cand, m, param, cookie, h0)
+                h0 = dict(ho)
+                if m == "PUT":
+                    h0["Content-Type"] = "text/plain"
+                ok, h, body = probe_json(cand, m, param, cookie, h0, stage)
+                if not ok and _is_auth_fail(body) and not stage:
+                    # 每次请求前要访问 getToken 刷新一次性 token（web205）
+                    stage = urllib.parse.urljoin(base, "api/getToken.php")
+                    LAST["stage"] = stage
+                    ok, h, body = probe_json(cand, m, param, cookie, h0, stage)
                 if ok and _has_data(body):
                     real, hdrs, method = cand, h, m
                     break
@@ -219,6 +260,11 @@ def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
         cmd += ["--method", method.upper(), "--data", *data]
     if headers:
         cmd += ["--header", *[f"{k}={v}" for k, v in headers.items()]]
+    if LAST.get("sid"):
+        cmd += ["--cookie", f"PHPSESSID={LAST['sid']}"]
+    if LAST.get("stage"):
+        cmd += ["--stage-url", LAST["stage"], "--stage-method", "GET",
+                "--stage-param", "@none"]
     if method.upper() == "PUT":
         # web203 类接口直读 php://input：body 必须原样发，URL 编码后 # 不还原
         cmd.append("--raw-body")

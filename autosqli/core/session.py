@@ -165,12 +165,18 @@ class HttpSession:
         s = self.session
         if self.spec.stage_url:
             stage_param = self.spec.stage_param or param
+            # "@none"：stage 只是「刷新 token」的裸请求，不带业务参数（web205 getToken）
+            bare = stage_param == "@none"
             t0 = time.perf_counter()
             try:
                 if self.spec.stage_method.upper() == "POST":
                     sr = s.post(self.spec.stage_url,
-                                data={stage_param: value}, timeout=self.timeout)
-                    stage_desc = f"POST {self.spec.stage_url} ({stage_param}=<payload>)"
+                                data={} if bare else {stage_param: value},
+                                timeout=self.timeout)
+                    stage_desc = f"POST {self.spec.stage_url}"
+                elif bare:
+                    sr = s.get(self.spec.stage_url, timeout=self.timeout)
+                    stage_desc = f"GET {self.spec.stage_url}"
                 else:
                     stage_query = self.spec.stage_url + (
                         "&" if "?" in self.spec.stage_url else "?")

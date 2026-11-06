@@ -264,6 +264,11 @@ python -m autosqli.cli -u ".../api/index.php" -p id --method PUT --data id=1 \
 **union 优先**：直接 `1' union select 9137,9150,9163#`，用独特数字判断闭合方式、
 列数与回显位，绕开布尔/报错两条死路（web203/204）。
 
+再往后还有「一次性 token」题型（web205）：`api/index.php` 返回 `api鉴权失败`，
+必须先 GET `api/getToken.php` 刷新会话里的 token。battle 会自动识别这句提示、
+取页面下发的 `PHPSESSID`，并用 `--stage-url … --stage-method GET --stage-param @none`
+给每个请求前置一次 token 刷新（等价 sqlmap 的 `--safe-url` + `--safe-freq=1`）。
+
 ### 输出解读
 
 1. **注入点行**：闭合/注释/列数/回显位；
