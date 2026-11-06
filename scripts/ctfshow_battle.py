@@ -194,6 +194,9 @@ def http_post(url: str, data: dict, cookie: str,
     import urllib.parse as up
     import urllib.request
     body = up.urlencode(data).encode()
+    if method.upper() == "PUT":
+        # PUT 类接口直读 php://input，不 urldecode：必须原样拼（web203）
+        body = "&".join(f"{k}={v}" for k, v in data.items()).encode()
     h = {"Cookie": "session=" + cookie,
          "User-Agent": "Mozilla/5.0 AutoSQLi-battle",
          "Content-Type": "application/x-www-form-urlencoded"}
@@ -216,6 +219,9 @@ def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
         cmd += ["--method", method.upper(), "--data", *data]
     if headers:
         cmd += ["--header", *[f"{k}={v}" for k, v in headers.items()]]
+    if method.upper() == "PUT":
+        # web203 类接口直读 php://input：body 必须原样发，URL 编码后 # 不还原
+        cmd.append("--raw-body")
     keep = re.compile(r"\[进度\]|注入点|指纹:|\[FLAG\]|\[WARN\]|\[ERROR\]|通道|请求数|"
                       r"脱库结果|已过滤|✗|★")
     out, t0 = [], time.time()

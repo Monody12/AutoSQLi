@@ -25,6 +25,7 @@ def build_spec(args) -> TargetSpec:
     spec = TargetSpec(
         url=base, method=args.method, params=params,
         cookies=cookies, headers=headers, param=args.param,
+        raw_body=args.raw_body,
         base_value=args.base_value,
         request_interval=args.delay,
         waf_signatures=list(args.waf_sig or []),
@@ -74,6 +75,8 @@ def main(argv=None):
     ap.add_argument("--header", nargs="*", help="附加请求头 k=v（可多次；如 User-Agent=sqlmap/1.5）")
     ap.add_argument("--dvwa", metavar="USER:PASS", default="", help="DVWA 类自动登录")
     ap.add_argument("--security", default="low", help="DVWA security 等级")
+    ap.add_argument("--raw-body", action="store_true",
+                    help="body 原样发送不 URL 编码（目标直读 php://input 时，如 web203）")
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
     ap.add_argument("--base-value", default="1", help="被测参数基线值")
     ap.add_argument("--delay", type=float, default=0.0, help="请求间隔秒")

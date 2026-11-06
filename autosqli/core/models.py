@@ -37,6 +37,7 @@ class TargetSpec:
 
     request_interval: float = 0.0             # 每次请求间隔（秒）
     verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验
+    raw_body: bool = False                    # body 原样发送不 URL 编码（web203 类）
     waf_signatures: list = field(default_factory=list)  # 用户自定义拦截页特征（子串或 /正则/）
 
 

@@ -190,8 +190,12 @@ class HttpSession:
         for attempt in (1, 2):        # 慢环境网络抖动重试一次
             try:
                 m = self.spec.method.upper()
-                body = {k: (value if k == param else str(v))
-                        for k, v in self.spec.body_params.items()}
+                if getattr(self.spec, "raw_body", False):
+                    # 原样发送：目标直接读 php://input，不做 urldecode（web203）
+                    body = f"{param}={value}"
+                else:
+                    body = {k: (value if k == param else str(v))
+                            for k, v in self.spec.body_params.items()}
                 if m == "POST":
                     r = s.post(self.spec.url, data=body, timeout=self.timeout)
                     final_url = self.spec.url
@@ -221,7 +225,8 @@ class HttpSession:
         # 空响应重试：部分靶场限流/丢包会返回 200+空体（瞬态）。若本会话见过
         # 非空响应，再空就大概率是瞬态 → 短退避重试一次，仍空则计数告警。
         # 确定性空体（如 PHP 吞错的 SQL 报错页）重试一次后照常返回，代价可控。
-        if r.status_code == 200 and not r.text and self._ever_nonempty:
+        if r.status_code == 200 and not r.text and self._ever_nonempty \
+                and not getattr(self.spec, "raw_body", False):
             time.sleep(0.8)
             try:
                 r2 = s.get(final_url, timeout=self.timeout) if \
