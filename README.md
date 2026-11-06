@@ -339,7 +339,7 @@ hex 字面量）→ HTTP 执行命令 → `ls`/`grep` 定位含 `ctfshow{` 的�
 | ctf.show web210 | 双重 base64+strrev 解码参数 | `battle.py web210` | 编码器自动识别，union，137 请求 / 23s |
 | ctf.show web211/212 | 同上变体 | `battle.py web211/212` | union，166 请求一次通过 |
 | ctf.show web213 | web209 waf + web210 解码，flag 在文件系统 | `battle.py web213` | 脱库无 flag → os-shell 兜底写 webshell 搜得 |
-| ctf.show web214 | 无回显纯时间盲注，UA 网关反向 | `battle.py web214` | debug=1 发现参数 ip，time-sec=1 磨出 flag |
+| ctf.show web214 | 无回显纯时间盲注，UA 网关反向 | `battle.py web214` | debug=1 发现参数 ip，time_blind 2493 请求 / 1117s |
 
 ### 表名位置 / count 盲注（web183-web186 类题型）
 
