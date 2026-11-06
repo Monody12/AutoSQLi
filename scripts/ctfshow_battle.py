@@ -360,6 +360,18 @@ def main(argv=None):
     rc, out = stream_cli(target, param, method, res["fields"], res["headers"],
                          args.budget, args.verbose, log_path)
     flags = list(dict.fromkeys(FLAG_RE.findall(out)))
+    if not flags:
+        # 兜底：flag 可能不在库里而在文件系统（web213 类 os-shell 题）
+        print(f"[{c['name']}] ↻ 库中无 flag，尝试 os-shell 兜底…", flush=True)
+        try:
+            from ctfshow_osshell import try_osshell
+            entry_path = urllib.parse.urlparse(target).path.lstrip("/")
+            f2, _ = try_osshell(base, entry_path, param, method,
+                                res["headers"], LAST.get("encoder", ""))
+            if f2:
+                flags = [f2]
+        except Exception as e:      # noqa: BLE001
+            print(f"   [osshell] 异常: {str(e)[:80]}", flush=True)
     tech = re.search(r"通道: (\w+)", out)
     reqs = re.search(r"请求数: (\d+)", out)
     dt = time.time() - t0
