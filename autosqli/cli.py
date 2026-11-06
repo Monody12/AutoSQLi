@@ -21,9 +21,10 @@ def build_spec(args) -> TargetSpec:
     params = dict(urllib.parse.parse_qsl(parsed.query))
     base = urllib.parse.urlunparse(parsed._replace(query=""))
     cookies = dict(kv.split("=", 1) for kv in args.cookie) if args.cookie else {}
+    headers = dict(kv.split("=", 1) for kv in args.header) if args.header else {}
     spec = TargetSpec(
         url=base, method=args.method, params=params,
-        cookies=cookies, param=args.param,
+        cookies=cookies, headers=headers, param=args.param,
         base_value=args.base_value,
         request_interval=args.delay,
         waf_signatures=list(args.waf_sig or []),
@@ -68,6 +69,7 @@ def main(argv=None):
     ap.add_argument("--method", default="GET", choices=["GET", "POST"])
     ap.add_argument("--data", nargs="*", help="POST 表单 k=v")
     ap.add_argument("--cookie", nargs="*", help="Cookie k=v")
+    ap.add_argument("--header", nargs="*", help="附加请求头 k=v（可多次；如 User-Agent=sqlmap/1.5）")
     ap.add_argument("--dvwa", metavar="USER:PASS", default="", help="DVWA 类自动登录")
     ap.add_argument("--security", default="low", help="DVWA security 等级")
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
