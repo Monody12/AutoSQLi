@@ -253,8 +253,16 @@ python -m autosqli.cli -u ".../api/" -p id --dump \
 
 ```bash
 python -m autosqli.cli -u ".../api/index.php" -p id --method PUT --data id=1 \
-    --header "Content-Type=text/plain" --dump
+    --header "Content-Type=text/plain" --raw-body --dump
 ```
+
+这类接口往往直读 `php://input`，**body 不能 URL 编码**：`#` 被编成 `%23` 后不会
+还原，`union ... #` 会整段失效（web203 实测）。`--raw-body` 就是原样发送
+`id=<payload>`；battle 在 PUT 模式下会自动带上。
+
+当 WAF 只放行 `union`、把 `and/or` 与报错全掐死时，注入点探测会自动走
+**union 优先**：直接 `1' union select 9137,9150,9163#`，用独特数字判断闭合方式、
+列数与回显位，绕开布尔/报错两条死路（web203/204）。
 
 ### 输出解读
 
