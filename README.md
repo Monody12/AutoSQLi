@@ -223,6 +223,16 @@ python scripts/ctfshow_runner.py --run web181 web182 # 连续多题（自动处�
 | `ctfshow_runner.py --list` | 题目与本地进度总览 |
 | `ctfshow_runner.py --run webA webB` | 连续多题，自动冷却 |
 
+### 堆叠注入 / 多结果集题型（web195-web200 类）
+
+这类题的 PHP 代码把 `$username` 直接拼进数字上下文（`where username = {$username};`），
+过滤函数却在 **SQL 执行之后**才跑（页面把「返回逻辑」贴出来时能看出顺序）。因此：
+
+- 注入串可以带 `;` 追加第二条语句，用第二条语句的结果集喂给 `$row[0]`；
+- `select(1)` 可用的题（web196）直接 `1;select(1)`；`select` 被滤时用 MariaDB
+  表值构造器 `1;values(1)`（web197/198）；
+- 括号被滤时 `values(1)`、`handler`（含 `and` 子串）都不可用，需要找其它无括号语句。
+
 ### 输出解读
 
 1. **注入点行**：闭合/注释/列数/回显位；
