@@ -108,9 +108,11 @@ def probe_json(url: str, method: str, param: str, cookie: str,
         if s == 200 and body.lstrip().startswith('{"code"') \
                 and not _is_auth_fail(body):
             return True, headers, body
-        if s == 200 and not _is_gate(body) and not _is_auth_fail(body) \
-                and "<html" not in body.lower():
-            # 时间盲注族（web214）：200 空体即正常（无回显，仅延时差异）
+        if s == 200 and not body.strip() and not _is_gate(body) \
+                and not _is_auth_fail(body) and "<html" not in body.lower():
+            # 时间盲注族（web214）：200 空体即正常（无回显，仅延时差异）。
+            # 必须限定空体——网关消息/查询失败 JSON 都有内容，放行会打断
+            # UA/Referer 头部修复循环（web210 回归实测）
             return True, headers, body
         new = _gate_headers(body, headers)
         if new == headers:
