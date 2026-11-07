@@ -41,6 +41,11 @@ class TargetSpec:
     value_encoder: str = ""                   # 参数预编码器名（web210 类：目标先 decode 再拼 SQL）
     flag_re: str = ""                         # 用户自定义 flag 正则（适配任意比赛格式）
     max_requests: int = 0                     # 请求预算（0=不限；线下赛防封 IP）
+    body_template: str = ""                   # JSON/自定义 body 模板（$$ 为注入标记）
+    fresh: bool = False                       # 忽略/清除断点续跑存档
+    csrf_url: str = ""                        # CSRF token 获取页（POST 前先 GET）
+    csrf_re: str = ""                         # token 提取正则（默认抓常见 name=value 形态）
+    csrf_field: str = ""                      # token 回传的表单字段名
     request_interval: float = 0.0             # 每次请求间隔（秒）
     verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验
     raw_body: bool = False                    # body 原样发送不 URL 编码（web203 类）

@@ -49,3 +49,22 @@ scenarios:
       ua_gate: reject_sqlmap                # 反向网关（web214）：sqlmap UA 被拒
       reject_regex: ['sleep']               # sleep 被拦（web217 族）
     flag: "flag{mock_regr35510n}"
+
+  /api_json.php:
+    method: POST
+    body_parse: json
+    fields: { id: "" }
+    template: "select id,title,content from news where id = '{id}' limit 1"
+    response: json_rows
+    flag: "flag{mock_regr35510n}"
+
+  /form_csrf.php:
+    method: POST
+    csrf_mode: true
+    fields: { username: "@form:username", password: "@form:password",
+              csrf_token: "@form:csrf_token" }
+    template: "select username from users where username = '{username}' and password = '{password}'"
+    response: login
+    flag: "flag{mock_regr35510n}"
+    waf:
+      reject_regex: [' ']

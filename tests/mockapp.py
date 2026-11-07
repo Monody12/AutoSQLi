@@ -203,13 +203,22 @@ class Handler(BaseHTTPRequestHandler):
 
         # 取值：按配置的字段映射
         values = {}
-        for out_key, src in sc.get("fields", {}).items():
-            if src == "@query":
-                values[out_key] = query.get(out_key, "")
-            elif src.startswith("@form:"):
-                values[out_key] = form.get(src.split(":", 1)[1], "")
-            else:
-                values[out_key] = query.get(out_key) or form.get(out_key, "")
+        if sc.get("body_parse") == "json":
+            # JSON body 场景：fields 的键即 JSON 键
+            try:
+                jbody = json.loads(raw) if raw else {}
+            except Exception:                 # noqa: BLE001
+                jbody = {}
+            for k in (sc.get("fields") or {}):
+                values[k] = str(jbody.get(k, ""))
+        else:
+            for out_key, src in sc.get("fields", {}).items():
+                if src == "@query":
+                    values[out_key] = query.get(out_key, "")
+                elif src.startswith("@form:"):
+                    values[out_key] = form.get(src.split(":", 1)[1], "")
+                else:
+                    values[out_key] = query.get(out_key) or form.get(out_key, "")
 
         rows, rej, _delay = eval_rows(sc, values, ua)
         if rej is not None:

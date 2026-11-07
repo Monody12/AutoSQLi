@@ -141,6 +141,17 @@ class HttpSession:
                 time.sleep(wait)
             self._last_request_time = time.monotonic()
 
+    def _fetch_csrf_token(self, s) -> str | None:
+        """POST 前从 csrf_url 抠 token（每请求一次；失败返回 None 不阻塞）。"""
+        try:
+            r = s.get(self.spec.csrf_url, timeout=self.timeout)
+            pat = getattr(self.spec, "csrf_re", "") or \
+                r"name=[\"']csrf[_a-z]*[\"'][^>]*value=[\"']([^\"']+)"
+            m = re.search(pat, r.text, re.I)
+            return m.group(1) if m else None
+        except requests.RequestException:
+            return None
+
     def build_url(self, value: str, param: Optional[str] = None) -> str:
         param = param or self.spec.param
         parts = []
@@ -200,12 +211,20 @@ class HttpSession:
         for attempt in (1, 2):        # 慢环境网络抖动重试一次
             try:
                 m = self.spec.method.upper()
-                if getattr(self.spec, "raw_body", False):
+                if getattr(self.spec, "body_template", ""):
+                    # JSON/自定义模板：$$ 为注入标记（原样发送，Content-Type 自带）
+                    body = self.spec.body_template.replace("$$", value)
+                elif getattr(self.spec, "raw_body", False):
                     # 原样发送：目标直接读 php://input，不做 urldecode（web203）
                     body = f"{param}={value}"
                 else:
                     body = {k: (value if k == param else str(v))
                             for k, v in self.spec.body_params.items()}
+                    # CSRF：POST 表单场景每请求前取新 token 塞进表单
+                    if getattr(self.spec, "csrf_url", ""):
+                        tok = self._fetch_csrf_token(s)
+                        if tok is not None and getattr(self.spec, "csrf_field", ""):
+                            body[self.spec.csrf_field] = tok
                 if m == "POST":
                     r = s.post(self.spec.url, data=body, timeout=self.timeout)
                     final_url = self.spec.url
@@ -243,7 +262,8 @@ class HttpSession:
         # 非空响应，再空就大概率是瞬态 → 短退避重试一次，仍空则计数告警。
         # 确定性空体（如 PHP 吞错的 SQL 报错页）重试一次后照常返回，代价可控。
         if r.status_code == 200 and not r.text and self._ever_nonempty \
-                and not getattr(self.spec, "raw_body", False)\
+                and not getattr(self.spec, "raw_body", False) \
+                and not getattr(self.spec, "body_template", "") \
                 and not getattr(self.spec, "empty_ok", False):
             time.sleep(0.8)
             try:
