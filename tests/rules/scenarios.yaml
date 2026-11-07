@@ -1,0 +1,51 @@
+# AutoSQLi mock 回归场景集：每族 CTFshow 防护 → 一条规则
+# waf.reject_regex 命中 → 整包拒（返回 REJECT 响应）；strip → str_replace 剥离
+scenarios:
+
+  /news.php:
+    method: GET
+    fields: { id: "@query" }
+    template: "select id,title,content from news where id = '{id}' limit 1"
+    response: html_rows
+    flag: "flag{mock_regr35510n}"
+
+  /news209.php:
+    method: GET
+    fields: { id: "@query" }
+    template: "select id,title,content from news where id = '{id}' limit 1"
+    response: html_rows
+    waf:
+      reject_regex: [' ', '\*', '=']        # 空格/*/＝ 整包拒（web209）
+      strip: ["select"]                     # 小写 select 剥离（大小写敏感）
+    flag: "flag{mock_regr35510n}"
+
+  /news210.php:
+    method: GET
+    fields: { id: "@query" }
+    template: "select id,title,content from news where id = '{id}' limit 1"
+    response: html_rows
+    waf:
+      decode: b64rev2                       # 参数过双重反转+base64 解码（web210）
+    flag: "flag{mock_regr35510n}"
+
+  /login.php:
+    method: POST
+    fields: { username: "@form:username", password: "@form:password" }
+    template: "select username from users where username = '{username}' and password = '{password}'"
+    response: login
+    flag: "flag{mock_regr35510n}"
+    waf:
+      reject_regex: [' ']                   # 空格被滤（web177 族），括号法可用
+
+  /api/index.php:
+    method: PUT
+    fields: { ip: "@form:ip", debug: "@form:debug" }
+    template: "select id from info where ip = ({ip})"
+    response: empty                         # 成功也空体（web214 族）
+    error_mode: empty                       # 报错也空体（真实 api 行为：一律无输出）
+    debug_echo: true                        # debug=1 → 回显 SQL 原文
+    bench_delay: 4.0
+    waf:
+      ua_gate: reject_sqlmap                # 反向网关（web214）：sqlmap UA 被拒
+      reject_regex: ['sleep']               # sleep 被拦（web217 族）
+    flag: "flag{mock_regr35510n}"

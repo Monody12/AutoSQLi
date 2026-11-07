@@ -481,8 +481,8 @@ class ExtractionPipeline:
         _enumerate_and_dump(full=not first_pass_only_current)
         if first_pass_only_current and not self.s.stopped:
             # 当前库没摸到 flag 样式的行 → 回退全库枚举补一遍
-            has_flagish = any(FLAGISH.search(str(v)) for row in res.rows.values()
-                              for v in row.values())
+            has_flagish = any(FLAGISH.search(str(row))
+                              for row in res.rows.values())
             if not has_flagish:
                 self.log("INFO", "[脱库] 当前库未见 flag 样式行，回退全库枚举")
                 _enumerate_and_dump()
