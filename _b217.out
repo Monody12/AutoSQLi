@@ -1,0 +1,14 @@
+  [复用] 本题容器已在运行，跳过重建
+[web217] 容器 https://a4885340-1f8a-4ed0-ab9d-2222b510a62f.challenge.ctf.show（0s）
+[web217] 入口 POST https://a4885340-1f8a-4ed0-ab9d-2222b510a62f.challenge.ctf.show/api/index.php  参数 id
+[web217] 过滤 function waf($str){
+        return preg_match('/sleep/i',$str);
+    }
+   [INFO] [进度] 会话就绪，开始注入点探测（0 请求 / 0.0s）
+   [WARN] 未发现明显注入点（闭合探测无 SQL 报错，数字型布尔无差异，union 无回显）
+   [INFO] [进度] 注入点探测完成（514 请求 / 24.8s）
+   [-] 未发现注入点
+       未发现注入点：可尝试更换被测参数、检查引号是否被转义（见 WAF 报告）或改用 POST/Cookie 位置
+[web217] ↻ 库中无 flag，尝试 os-shell 兜底…
+   [osshell] webshell 写入失败（outfile 不可用）
+[web217] ❌ 未出 flag | rc=1 | 31s | 日志 C:\Users\Administrator\Documents\CTFWorkSpace\AutoSQLi\runs\web217.log
