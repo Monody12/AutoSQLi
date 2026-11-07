@@ -30,6 +30,8 @@ def build_spec(args) -> TargetSpec:
         time_sec=args.time_sec,
         table_hint=args.table_hint,
         empty_ok=args.empty_ok,
+        flag_re=args.flag_re,
+        max_requests=args.max_requests,
         base_value=args.base_value,
         request_interval=args.delay,
         waf_signatures=list(args.waf_sig or []),
@@ -92,6 +94,11 @@ def main(argv=None):
                     help="基础查询的表名提示（盲注时跳过全库枚举直取该表 flag 行）")
     ap.add_argument("--empty-ok", action="store_true",
                     help="200 空体是正常答案（时间盲注族），禁用空响应重试")
+    ap.add_argument("--flag-re", default="",
+                    help="自定义 flag 正则（适配任意比赛格式），"
+                         "如 --flag-re 'DASCTF\\{[^}]+\\}'")
+    ap.add_argument("--max-requests", type=int, default=0,
+                    help="请求预算（0=不限；线下赛防封 IP，超限硬停会话）")
     ap.add_argument("--stage-url", default="", help="两步提交入口（先写值再触发，如二次注入/DVWA high）")
     ap.add_argument("--stage-method", default="POST", help="stage 请求方式（默认 POST）")
     ap.add_argument("--stage-param", default="",

@@ -231,7 +231,14 @@ class HttpSession:
         info = ResponseInfo(status_code=r.status_code, body=r.text,
                             elapsed_ms=elapsed, url=final_url,
                             headers=dict(r.headers),
-                            custom_waf_patterns=self.spec.waf_signatures)
+                            custom_waf_patterns=self.spec.waf_signatures,
+                            flag_re=getattr(self.spec, "flag_re", ""))
+        # 线下赛封禁防线：请求预算（--max-requests）用尽 → 硬停，保住 IP
+        max_req = getattr(self.spec, "max_requests", 0)
+        if max_req and self.request_count >= max_req and not self._stop.is_set():
+            self.log("ERROR", f"请求预算用尽（{max_req}），硬停会话——"
+                              "如需继续请调大 --max-requests")
+            self._stop.set()
         # 空响应重试：部分靶场限流/丢包会返回 200+空体（瞬态）。若本会话见过
         # 非空响应，再空就大概率是瞬态 → 短退避重试一次，仍空则计数告警。
         # 确定性空体（如 PHP 吞错的 SQL 报错页）重试一次后照常返回，代价可控。
@@ -249,13 +256,17 @@ class HttpSession:
                     info = ResponseInfo(status_code=r2.status_code, body=r2.text,
                                         elapsed_ms=elapsed, url=final_url,
                                         headers=dict(r2.headers),
-                                        custom_waf_patterns=self.spec.waf_signatures)
+                                        custom_waf_patterns=self.spec.waf_signatures,
+                                        flag_re=getattr(self.spec, "flag_re", ""))
                     self.log("WARN", "空响应重试成功（疑似限流），已采用重试结果")
                 else:
                     self._consecutive_empty += 1
                     if self._consecutive_empty == 4:
                         self.log("WARN", "连续空响应≥4，目标可能在限流——"
                                          "建议降低并发(--workers 1-2)或加 --delay")
+                    if self._consecutive_empty >= 12 and not self._stop.is_set():
+                        self.log("ERROR", "连续空响应≥12，疑似被封禁——硬停会话保护 IP")
+                        self._stop.set()
             except requests.RequestException:
                 pass
         if info.body:

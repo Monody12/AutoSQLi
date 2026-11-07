@@ -39,6 +39,8 @@ class TargetSpec:
     table_hint: str = ""                      # 基础查询表名提示（battle 从 debug 回显解析）
     empty_ok: bool = False                    # 200 空体是正常答案（时间盲注族），禁用空响应重试
     value_encoder: str = ""                   # 参数预编码器名（web210 类：目标先 decode 再拼 SQL）
+    flag_re: str = ""                         # 用户自定义 flag 正则（适配任意比赛格式）
+    max_requests: int = 0                     # 请求预算（0=不限；线下赛防封 IP）
     request_interval: float = 0.0             # 每次请求间隔（秒）
     verify_ssl: bool = False                  # CTF 靶场常为自签证书，默认不校验
     raw_body: bool = False                    # body 原样发送不 URL 编码（web203 类）
@@ -115,6 +117,45 @@ class ResponseInfo:
     url: str = ""
     headers: dict = field(default_factory=dict)
     custom_waf_patterns: list = field(default_factory=list)   # 用户自定义拦截特征
+    flag_re: str = ""                                         # 用户自定义 flag 正则
+
+    @property
+    def length(self) -> int:
+        return len(self.body)
+
+    def has_sql_error(self) -> bool:
+        low = self.body.lower()
+        return any(re.search(p, low, re.I) for p in SQL_ERROR_PATTERNS)
+
+    def sql_error_text(self) -> str:
+        """提取页面中的 SQL 报错文本（<pre> 块优先）。"""
+        m = re.search(r"<pre[^>]*>(.*?)</pre>", self.body, re.S | re.I)
+        text = m.group(1) if m else self.body
+        m = re.search(r"((?:You have an error|XPATH syntax error|Duplicate entry|Incorrect).*?)(?:<|$)",
+                      text, re.S | re.I)
+        return (m.group(1) if m else text[:200]).strip()
+
+    def has_waf_block(self) -> bool:
+        if self.status_code in WAF_BLOCK_STATUS:
+            return True
+        low = self.body.lower()
+        if any(re.search(p, low, re.I) for p in WAF_BLOCK_PATTERNS):
+            return True
+        return any(sig_match(low, s) for s in self.custom_waf_patterns)
+
+    def contains_all(self, *needles: str) -> bool:
+        return all(n in self.body for n in needles)
+
+    def find_flags(self) -> list:
+        """提取响应中符合 CTF flag 格式的字符串（万能密码题登录页直出 flag）。
+        用户给了 --flag-re 时优先用自定义正则（适配任意比赛 flag 格式）。"""
+        pat = FLAG_PATTERN
+        if self.flag_re:
+            try:
+                pat = re.compile(self.flag_re, re.I)
+            except re.error:
+                pass
+        return [m.group(0) for m in pat.finditer(self.body)]
 
     @property
     def length(self) -> int:

@@ -111,6 +111,11 @@ def challenges(api: Api, filt: str = "") -> list[dict]:
     return data
 
 
+def detail(api: Api, cid: int) -> dict:
+    """单题详情：description=题面（含 waf 源码）、hints、solved_by_me。"""
+    return api.req("GET", f"/api/v1/challenges/{cid}")
+
+
 def by_name(items: list[dict], name: str) -> dict:
     for c in items:
         if (c.get("name") or "").lower() == name.lower():

