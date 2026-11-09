@@ -225,7 +225,11 @@ class WafScanner:
         else:
             # other：既非基线也非 SQL 报错。err_valid 环境下 kw 探针应报错而未报错
             # → 强烈暗示被 WAF 拦截（如强网杯 preg_match 返回默认页）
-            if self.err_valid:
+            # 例外：space 探针本就不该触发 SQL 报错（空格是合法语法），
+            # 判 filtered 会让构造层把空格换成 /**/ —— BabySQL 恰过滤 *，
+            # 整条 union 报废（ctf2 #13 实测空格可用）。空格只在 block 类
+            # （真拦截页）记过滤，other 记未知。
+            if self.err_valid and token != "space":
                 filtered, ev = True, "疑似 WAF 拦截（应触发 SQL 报错而未报错，响应异于基线）"
             else:
                 filtered, ev = None, "响应特征不明确"

