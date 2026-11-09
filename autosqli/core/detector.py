@@ -219,7 +219,7 @@ class Detector:
                     if mode.endswith("-mixed"):
                         core = mixed_case(core)
                     sep = form_sep(base_mode) if suffix == "" else ""
-                    for tail in ("#", "-- "):
+                    for tail in ("#", "-- ", ";%00"):
                         payload = f"{pbase}{suffix}{sep}{core}{tail}"
                         r = self._send(payload)
                         if r.status_code < 0:
@@ -357,6 +357,7 @@ class Detector:
         candidates = [
             ("#", "#"),
             ("-- ", "-- "),
+            (";%00", ";%00"),      # 空字节截断（#/-- 被滤时的替代，NCTF2019）
             ("none", ""),          # 无注释（数字型表达式自然结束）
             ("quote-close", None),  # 引号闭合（仅字符串型）
         ]

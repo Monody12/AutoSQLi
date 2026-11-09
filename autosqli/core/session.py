@@ -215,7 +215,11 @@ class HttpSession:
         for attempt in (1, 2):        # 慢环境网络抖动重试一次
             try:
                 m = self.spec.method.upper()
-                if getattr(self.spec, "body_template", ""):
+                if "%00" in value:
+                    # 空字节截断（;%00）：必须原样发送，urlencode 会变
+                    # %2500（ctf2 #172 NCTF2019 实测）
+                    body = f"{param}={value}"
+                elif getattr(self.spec, "body_template", ""):
                     # JSON/自定义模板：$$ 为注入标记（原样发送，Content-Type 自带）
                     body = self.spec.body_template.replace("$$", value)
                 elif getattr(self.spec, "raw_body", False):

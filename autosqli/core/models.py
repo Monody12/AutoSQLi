@@ -185,11 +185,13 @@ def similarity(a: ResponseInfo, b: ResponseInfo) -> float:
 # 注入点
 # ---------------------------------------------------------------------------
 
-COMMENT_STYLES = ("#", "-- ", "--+#", "/**/", "quote-close", "minus-close")
+COMMENT_STYLES = ("#", "-- ", "--+#", "/**/", ";%00", "quote-close",
+                   "minus-close")
 
 # 尾部注释方式 → payload 字面量（minus-close：减法盲注用 -' 引号闭合，
 # 替代被滤的 #/--，如 xxx'-(cond)-'）
-_TAIL_LITERALS = {"quote-close": "", "none": "", "minus-close": "-'"}
+_TAIL_LITERALS = {"quote-close": "", "none": "", "minus-close": "-'",
+                   ";%00": ";%00"}
 
 
 @dataclass

