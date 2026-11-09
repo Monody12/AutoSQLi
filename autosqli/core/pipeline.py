@@ -409,15 +409,21 @@ class ExtractionPipeline:
                 cols = self.list_columns(res.database, hint)
             except OracleError:
                 cols = []
-            if cols:
-                rows = self.try_flag_first(res.database, hint, cols)
-                if rows:
-                    res.tables[res.database] = [hint]
-                    res.columns[(res.database, hint)] = cols
-                    res.rows[(res.database, hint)] = rows
-                    self._note("表名提示直取 flag 行",
-                               f"{res.database}.{hint}（跳过全库枚举）")
-                    return res
+            if not cols:
+                # information_schema 被 WAF 拦（或枚举失败）时，题面常把列名
+                # 写在提示里（"the column is 'flag'"）→ 先试与表名同名的列，
+                # 再补字典常见列名（表名=列名在 CTF 里很常见）
+                cols = [hint] + [c for c in _brute_dict().get("columns", [])
+                                 if c.lower() != hint.lower()][:4]
+                self.log("INFO", f"[脱库] 列名不可枚举，按提示试: {cols}")
+            rows = self.try_flag_first(res.database, hint, cols)
+            if rows:
+                res.tables[res.database] = [hint]
+                res.columns[(res.database, hint)] = cols
+                res.rows[(res.database, hint)] = rows
+                self._note("表名提示直取 flag 行",
+                           f"{res.database}.{hint}（跳过全库枚举）")
+                return res
             self.log("INFO", f"[脱库] 表名提示 {hint} 未命中 flag 行，回退全库枚举")
 
         # 时间盲注通道：全库枚举太贵（库名清单 60 字符 ≈ 5 分钟睡眠），

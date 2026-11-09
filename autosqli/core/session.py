@@ -39,6 +39,10 @@ class HttpSession:
         self._stop = threading.Event()
         # 单题时间预算（--max-seconds）：到点后 stopped 变 True，各循环自然收工
         self.deadline: Optional[float] = None
+        # 基线自学习：基线页面自带的拦截词（如标题 "Hack World" 命中 \bhack\b）
+        # 对本目标无区分度 → 后续所有响应判定时抑制这些模式（防整站误判拦截）
+        self.benign_waf_patterns: list = []
+        self._benign_learned = False
 
     def record_step(self, title: str, payload: str, note: str = ""):
         """登记解题关键步骤（供复盘报告：知其然并知其所以然）。相同步骤去重。"""
@@ -247,10 +251,21 @@ class HttpSession:
         elapsed = (time.perf_counter() - t0) * 1000
         self.request_count += 1
         self._sync_cookies(s)
+        # 第一次成功响应（= 基线）自学习：页面自带词不参与后续拦截判定
+        if not self._benign_learned and r.status_code == 200 and r.text.strip():
+            self._benign_learned = True
+            from .models import WAF_BLOCK_PATTERNS
+            self.benign_waf_patterns = [
+                p for p in WAF_BLOCK_PATTERNS
+                if re.search(p, r.text, re.I)]
+            if self.benign_waf_patterns:
+                self.log("INFO", f"基线页面命中 {len(self.benign_waf_patterns)} 个"
+                                 "拦截词（已抑制，避免整站误判）")
         info = ResponseInfo(status_code=r.status_code, body=r.text,
                             elapsed_ms=elapsed, url=final_url,
                             headers=dict(r.headers),
                             custom_waf_patterns=self.spec.waf_signatures,
+                            benign_waf_patterns=self.benign_waf_patterns,
                             flag_re=getattr(self.spec, "flag_re", ""))
         # 线下赛封禁防线：请求预算（--max-requests）用尽 → 硬停，保住 IP
         max_req = getattr(self.spec, "max_requests", 0)
@@ -277,6 +292,7 @@ class HttpSession:
                                         elapsed_ms=elapsed, url=final_url,
                                         headers=dict(r2.headers),
                                         custom_waf_patterns=self.spec.waf_signatures,
+                                        benign_waf_patterns=self.benign_waf_patterns,
                                         flag_re=getattr(self.spec, "flag_re", ""))
                     self.log("WARN", "空响应重试成功（疑似限流），已采用重试结果")
                 else:

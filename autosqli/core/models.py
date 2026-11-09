@@ -78,6 +78,12 @@ SQL_ERROR_PATTERNS = [
     r"truncated incorrect",
     r"mix of collations",
     r"Incorrect .*? value",
+    # PHP 层报错（display_errors + xdebug/var_dump 形态：查询 false 时的
+    # 典型输出，如 Hack World 的 <pre class='xdebug-var-dump'>boolean false）
+    r"xdebug-var-dump",
+    r"\bboolean\s+(?:true|false)\b",
+    r"<b>(?:fatal error|parse error|warning|notice)</b>",
+    r"on line \d+",
 ]
 
 WAF_BLOCK_PATTERNS = [
@@ -123,6 +129,9 @@ class ResponseInfo:
     headers: dict = field(default_factory=dict)
     custom_waf_patterns: list = field(default_factory=list)   # 用户自定义拦截特征
     flag_re: str = ""                                         # 用户自定义 flag 正则
+    # 基线页面自身命中的拦截模式 → 对本目标无区分度，判定时忽略
+    # （页面标题含 "Hack World" 会让 \bhack\b 命中，整站响应全被误判拦截）
+    benign_waf_patterns: list = field(default_factory=list)
 
     @property
     def length(self) -> int:
@@ -144,7 +153,8 @@ class ResponseInfo:
         if self.status_code in WAF_BLOCK_STATUS:
             return True
         low = self.body.lower()
-        if any(re.search(p, low, re.I) for p in WAF_BLOCK_PATTERNS):
+        if any(re.search(p, low, re.I) for p in WAF_BLOCK_PATTERNS
+               if p not in self.benign_waf_patterns):
             return True
         return any(sig_match(low, s) for s in self.custom_waf_patterns)
 
@@ -162,36 +172,6 @@ class ResponseInfo:
                 pass
         return [m.group(0) for m in pat.finditer(self.body)]
 
-    @property
-    def length(self) -> int:
-        return len(self.body)
-
-    def has_sql_error(self) -> bool:
-        low = self.body.lower()
-        return any(re.search(p, low, re.I) for p in SQL_ERROR_PATTERNS)
-
-    def sql_error_text(self) -> str:
-        """提取页面中的 SQL 报错文本（<pre> 块优先）。"""
-        m = re.search(r"<pre[^>]*>(.*?)</pre>", self.body, re.S | re.I)
-        text = m.group(1) if m else self.body
-        m = re.search(r"((?:You have an error|XPATH syntax error|Duplicate entry|Incorrect).*?)(?:<|$)",
-                      text, re.S | re.I)
-        return (m.group(1) if m else text[:200]).strip()
-
-    def has_waf_block(self) -> bool:
-        if self.status_code in WAF_BLOCK_STATUS:
-            return True
-        low = self.body.lower()
-        if any(re.search(p, low, re.I) for p in WAF_BLOCK_PATTERNS):
-            return True
-        return any(sig_match(low, s) for s in self.custom_waf_patterns)
-
-    def contains_all(self, *needles: str) -> bool:
-        return all(n in self.body for n in needles)
-
-    def find_flags(self) -> list:
-        """提取响应中符合 CTF flag 格式的字符串（万能密码题登录页直出 flag）。"""
-        return [m.group(0) for m in FLAG_PATTERN.finditer(self.body)]
 
 
 def similarity(a: ResponseInfo, b: ResponseInfo) -> float:
